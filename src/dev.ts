@@ -1,11 +1,9 @@
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
 import { main } from "./cli";
 
 const vite = await createServer({
-  configFile: false,
-  root: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../viewer"),
+  configFile: fileURLToPath(new URL("../vite.config.ts", import.meta.url)),
   server: { middlewareMode: true },
   appType: "spa",
 });

@@ -23,8 +23,8 @@ const cssVar = (name: string) => getComputedStyle(document.documentElement).getP
 
 const basename = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
-const card = { width: 240, height: 96 };
-const stub = { width: 200, height: 60 };
+export const card = { width: 240, height: 96 };
+export const stub = { width: 200, height: 60 };
 const fileBox = { width: 180, height: 60 };
 
 export const graphStyle = (color: ColorMode): cytoscape.StylesheetJson => {
@@ -404,7 +404,7 @@ export const functionElements = (
 
 const itemSize = (item: MapItem) => (item.kind === "group" ? card : item.kind === "stub" ? stub : fileBox);
 
-const itemLabel = (item: MapItem) => {
+export const itemLabel = (item: MapItem) => {
   if (item.kind === "file") return `${item.label}\nCC ${item.maxCC ?? "N/A"}`;
   const files = `${item.moduleIds.length} file${item.moduleIds.length === 1 ? "" : "s"}`;
   if (item.kind === "stub") return `${item.label}\n${files} outside this view`;

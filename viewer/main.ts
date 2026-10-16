@@ -25,6 +25,8 @@ import {
   sizeStructureLabels,
   wheelZoom,
 } from "./graph";
+import { mapScene } from "./map-flow";
+import { createMapGraph } from "./map-graph.svelte";
 import {
   type Grouping,
   type MapView,
@@ -254,21 +256,19 @@ const wireHover = (cy: cytoscape.Core, tab: Tab) => {
 const mapView = (): MapView =>
   state.map.path ? pathView(data(), state.map.path) : buildView(data(), tree(), state.map.node);
 
-const renderMapGraph = () => {
+const mapGraph = createMapGraph(containerOf("map"), {
+  select: (id) => selectIn("map", id),
+  open: (id) => openItem(id),
+});
+
+const renderMapGraph = (center: string | null = null) => {
   const view = mapView();
   state.map.view = view;
   const positions =
     !state.map.path && state.map.node === "root" ? sidesPositions(view.items, new Set(traySides)) : mapPositions(view, 1);
-  state.cy.map?.destroy();
-  const cy = createGraph(containerOf("map"), mapElements(view, positions), state.color);
-  state.cy.map = cy;
-  wireCommonEvents(cy, "map");
-  wireHover(cy, "map");
-  cy.on("dbltap", "node", (event) => openItem((event.target as cytoscape.NodeSingular).id()));
-  if (state.map.selected && cy.getElementById(state.map.selected).empty()) state.map.selected = null;
-  emphasise(cy, state.map.selected);
-  syncSelection(cy, state.map.selected);
-  fitVisible(cy);
+  const ids = new Set([...view.items.map((item) => item.id), ...view.links.map((link) => link.id)]);
+  if (state.map.selected && !ids.has(state.map.selected)) state.map.selected = null;
+  mapGraph.show(mapScene(view, positions, center), state.map.selected, state.color);
 };
 
 const renderRoutesGraph = () => {
@@ -435,10 +435,12 @@ const centerOn = (cy: cytoscape.Core, id: string) => {
 };
 
 const selectIn = (tab: Tab, id: string | null) => {
-  if (tab === "map" || tab === "routes") {
-    if (tab === "map") state.map.selected = id;
-    else state.routes.item = id;
-    const cy = state.cy[tab];
+  if (tab === "map") {
+    state.map.selected = id;
+    mapGraph.select(id);
+  } else if (tab === "routes") {
+    state.routes.item = id;
+    const cy = state.cy.routes;
     if (cy) {
       emphasise(cy, id);
       syncSelection(cy, id);
@@ -472,10 +474,8 @@ const openMapNode = (nodeId: string, selected: string | null = null) => {
   state.map.path = null;
   state.map.selected = selected;
   state.pathPickerFrom = null;
-  renderMapGraph();
-  const cy = state.cy.map;
   const node = tree().nodes.get(state.map.node);
-  if (cy && selected && node && viewMode(node) === "files") centerOn(cy, selected);
+  renderMapGraph(selected && node && viewMode(node) === "files" ? selected : null);
   refresh();
   writeHash(true);
 };
@@ -1212,6 +1212,7 @@ const wireToolbar = () => {
   elements.color.addEventListener("change", () => {
     state.color = elements.color.value === "complexity" ? "complexity" : "side";
     Object.values(state.cy).forEach((cy) => cy?.style(graphStyle(state.color)));
+    mapGraph.setColor(state.color);
     refresh();
     writeHash(false);
   });
@@ -1227,6 +1228,7 @@ const wireToolbar = () => {
   elements.fit.addEventListener("click", () => {
     const cy = state.cy[state.tab];
     if (cy) fitVisible(cy);
+    else if (state.tab === "map") mapGraph.fit();
   });
   elements.rescan.addEventListener("click", () => void rescan());
   elements.layout.addEventListener("change", () => {
