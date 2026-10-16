@@ -1,32 +1,12 @@
-import type cytoscape from "cytoscape";
 import type { FunctionLogic, GraphSnapshot, Side } from "../src/model";
 import { type Index, buildIndex, folderLabel, lineRef, moduleIdOf, routeLabel, splitEdgeId } from "./data";
 import { basename, byId, h, plural } from "./dom";
 import { defaultCollapsed, flowPositions, flowView, structuralKinds } from "./flow";
-import {
-  type ColorMode,
-  type FunctionLayout,
-  type ModuleLayout,
-  bucketLabels,
-  createGraph,
-  emphasise,
-  fitVisible,
-  flowElements,
-  highlightPaths,
-  forceLayoutLimit,
-  functionElements,
-  graphStyle,
-  mapElements,
-  mapPositions,
-  moduleElements,
-  restoreStructure,
-  runForceLayout,
-  sidesPositions,
-  sizeStructureLabels,
-  wheelZoom,
-} from "./graph";
-import { mapScene } from "./map-flow";
-import { createMapGraph } from "./map-graph.svelte";
+import { forceLayout } from "./force";
+import { type ColorMode, type FunctionLayout, type ModuleLayout, bucketLabels, forceLayoutLimit, mapPositions, sidesPositions } from "./graph";
+import { type GraphView, createGraphView } from "./graph-view.svelte";
+import { type Point, layered } from "./layered";
+import { allFilesLook, functionsLook, neighbourhoodLook, pathLook } from "./looks";
 import {
   type Grouping,
   type MapView,
@@ -60,6 +40,8 @@ import {
   routePanel,
   routesListPanel,
 } from "./panels";
+import type { Scene } from "./scene";
+import { flowScene, functionScene, mapScene, moduleScene, structureCenters } from "./scenes";
 
 type Tab = "map" | "routes" | "all" | "functions" | "logic";
 type SearchHit = { label: string; detail: string; run: () => void };
@@ -118,13 +100,20 @@ const state = {
     view: null as MapView | null,
   },
   routes: { selected: null as string | null, item: null as string | null, filter: "", view: null as RouteView | null },
-  all: { selected: null as string | null, focus: false, layout: "structure" as ModuleLayout, moved: false },
+  all: {
+    selected: null as string | null,
+    focus: false,
+    layout: "structure" as ModuleLayout,
+    moved: false,
+    scene: null as Scene | null,
+  },
   functions: {
     explored: null as string | null,
     selected: null as string | null,
     focus: false,
     layout: "cose" as FunctionLayout,
-    positions: null as Map<string, cytoscape.Position> | null,
+    positions: null as Map<string, Point> | null,
+    scene: null as Scene | null,
   },
   logic: {
     functionId: null as string | null,
@@ -132,7 +121,6 @@ const state = {
     selected: null as string | null,
     collapsed: new Set<string>(),
   },
-  cy: { map: null, routes: null, all: null, functions: null, logic: null } as Record<Tab, cytoscape.Core | null>,
   pathPickerFrom: null as string | null,
   scanning: false,
   searchHits: [] as SearchHit[],
@@ -230,188 +218,169 @@ const currentSelection = (tab: Tab) =>
           ? state.logic.selected
           : state.functions.selected;
 
-const syncSelection = (cy: cytoscape.Core, id: string | null) => {
-  const element = id ? cy.getElementById(id) : null;
-  if (!element || element.empty()) cy.elements(":selected").unselect();
-  else if (!element.selected()) {
-    cy.elements(":selected").unselect();
-    element.select();
-  }
-};
-
 const containerOf = (tab: Tab) => elements.graphs[tab];
 
-const wireCommonEvents = (cy: cytoscape.Core, tab: Tab) => {
-  cy.on("tap", "node, edge", (event) => selectIn(tab, (event.target as cytoscape.SingularElementArgument).id()));
-  cy.on("tap", (event) => {
-    if (event.target === cy) selectIn(tab, null);
-  });
+const sceneHas = (scene: Scene, id: string) =>
+  scene.nodes.some((node) => node.id === id) || scene.edges.some((edge) => edge.id === id);
+
+const openRouteItem = (id: string) => {
+  const item = state.routes.view?.items.find((candidate) => candidate.id === id);
+  if (item?.kind === "file") exploreFunctions(item.moduleIds[0] as string);
+  else if (item?.target) openMapNode(item.target);
 };
 
-const wireHover = (cy: cytoscape.Core, tab: Tab) => {
-  cy.on("mouseover", "node", (event) => emphasise(cy, (event.target as cytoscape.NodeSingular).id()));
-  cy.on("mouseout", "node", () => emphasise(cy, currentSelection(tab)));
+const toggleStructural = (id: string) => {
+  const owner = id.startsWith("collapsed:") ? id.slice("collapsed:".length) : id;
+  const node = state.logic.data?.nodes.find((candidate) => candidate.id === owner);
+  if (node && structuralKinds.has(node.kind)) toggleLogic(owner);
+};
+
+const graphs: Record<Tab, GraphView> = {
+  map: createGraphView(containerOf("map"), { select: (id) => selectIn("map", id), open: (id) => openItem(id) }),
+  routes: createGraphView(containerOf("routes"), { select: (id) => selectIn("routes", id), open: (id) => openRouteItem(id) }),
+  all: createGraphView(containerOf("all"), {
+    select: (id) => selectIn("all", id),
+    open: (id) => {
+      if (id.startsWith("module:")) exploreFunctions(id);
+    },
+  }),
+  functions: createGraphView(containerOf("functions"), {
+    select: (id) => selectIn("functions", id),
+    open: (id) => void openLogic(id),
+  }),
+  logic: createGraphView(containerOf("logic"), { select: (id) => selectIn("logic", id), open: (id) => toggleStructural(id) }),
 };
 
 const mapView = (): MapView =>
   state.map.path ? pathView(data(), state.map.path) : buildView(data(), tree(), state.map.node);
-
-const mapGraph = createMapGraph(containerOf("map"), {
-  select: (id) => selectIn("map", id),
-  open: (id) => openItem(id),
-});
 
 const renderMapGraph = (center: string | null = null) => {
   const view = mapView();
   state.map.view = view;
   const positions =
     !state.map.path && state.map.node === "root" ? sidesPositions(view.items, new Set(traySides)) : mapPositions(view, 1);
-  const ids = new Set([...view.items.map((item) => item.id), ...view.links.map((link) => link.id)]);
-  if (state.map.selected && !ids.has(state.map.selected)) state.map.selected = null;
-  mapGraph.show(mapScene(view, positions, center), state.map.selected, state.color);
+  const scene = mapScene(view);
+  if (state.map.selected && !sceneHas(scene, state.map.selected)) state.map.selected = null;
+  graphs.map.show({
+    scene,
+    centers: positions,
+    selected: state.map.selected,
+    color: state.color,
+    look: (focus) => neighbourhoodLook(scene, focus),
+    hover: true,
+    placement: center ? { center } : "fit",
+  });
 };
 
 const renderRoutesGraph = () => {
-  state.cy.routes?.destroy();
-  state.cy.routes = null;
   const route = state.routes.selected ? index().routes.get(state.routes.selected) : undefined;
   if (!route) {
     state.routes.view = null;
+    graphs.routes.clear();
     return;
   }
   const view = buildRouteView(data(), tree(), route);
   state.routes.view = view;
-  const cy = createGraph(containerOf("routes"), mapElements(view, mapPositions(view, 2)), state.color);
-  state.cy.routes = cy;
-  wireCommonEvents(cy, "routes");
-  wireHover(cy, "routes");
-  cy.on("dbltap", "node", (event) => {
-    const item = view.items.find((candidate) => candidate.id === (event.target as cytoscape.NodeSingular).id());
-    if (item?.kind === "file") exploreFunctions(item.moduleIds[0] as string);
-    else if (item?.target) openMapNode(item.target);
+  const scene = mapScene(view);
+  if (state.routes.item && !sceneHas(scene, state.routes.item)) state.routes.item = null;
+  graphs.routes.show({
+    scene,
+    centers: mapPositions(view, 2),
+    selected: state.routes.item,
+    color: state.color,
+    look: (focus) => neighbourhoodLook(scene, focus),
+    hover: true,
+    placement: "fit",
   });
-  if (state.routes.item && cy.getElementById(state.routes.item).empty()) state.routes.item = null;
-  emphasise(cy, state.routes.item);
-  syncSelection(cy, state.routes.item);
-  fitVisible(cy);
 };
 
-const fileNeighbours = (files: cytoscape.NodeCollection) => files.connectedEdges(".file-edge").connectedNodes();
+const allOptions = () => ({ focus: state.all.focus, cyclesOnly: elements.cyclesOnly.checked });
 
-const allFocusSet = (selected: cytoscape.CollectionReturnValue): cytoscape.NodeCollection => {
-  const id = selected.id();
-  if (id.startsWith("module:")) return selected.nodes().union(fileNeighbours(selected.nodes()));
-  if (id.startsWith("group:")) {
-    const files = selected.nodes().children();
-    return files.union(fileNeighbours(files));
-  }
-  const edge = selected as unknown as cytoscape.EdgeSingular;
-  if (id.startsWith("folders:")) return edge.source().children().union(edge.target().children());
-  return edge.connectedNodes();
-};
-
-const highlightAll = (cy: cytoscape.Core, selected: cytoscape.CollectionReturnValue) => {
-  const id = selected.id();
-  const files = cy.nodes(".file");
-  if (id.startsWith("module:")) {
-    const outgoing = selected.outgoers("edge.file-edge");
-    const incoming = selected.incomers("edge.file-edge");
-    outgoing.removeClass("hidden").addClass("outgoing");
-    incoming.removeClass("hidden").addClass("incoming");
-    files.not(selected.union(outgoing.targets()).union(incoming.sources())).addClass("dim");
-    cy.edges(".group-edge").addClass("dim");
-  } else if (id.startsWith("group:")) {
-    const edges = selected.connectedEdges(".group-edge");
-    edges.filter((edge) => edge.source().id() === id).addClass("outgoing");
-    edges.filter((edge) => edge.target().id() === id).addClass("incoming");
-    cy.edges(".group-edge").not(edges).addClass("dim");
-    files.not(selected.children()).addClass("dim");
-  } else {
-    const edge = selected as unknown as cytoscape.EdgeSingular;
-    edge.removeClass("hidden").addClass("outgoing");
-    const ends = id.startsWith("folders:") ? edge.source().children().union(edge.target().children()) : edge.connectedNodes();
-    files.not(ends).addClass("dim");
-    cy.edges(".group-edge").not(edge).addClass("dim");
-  }
+const visibleFiles = (scene: Scene, selected: string | null) => {
+  const look = allFilesLook(scene, selected, allOptions());
+  return scene.nodes.filter((node) => node.id.startsWith("module:") && !look.hidden.has(node.id));
 };
 
 const refreshAllGraph = (relayout: boolean) => {
-  const cy = state.cy.all;
-  if (!cy) return;
-  const selectedId = state.all.selected;
-  const selected = selectedId && cy.getElementById(selectedId).nonempty() ? cy.getElementById(selectedId) : null;
-  const focused = state.all.focus && selected !== null;
-  const filtered = elements.cyclesOnly.checked || focused;
-  cy.batch(() => {
-    cy.elements().removeClass("dim outgoing incoming hidden");
-    const visible = focused && selected ? allFocusSet(selected) : elements.cyclesOnly.checked ? cy.nodes(".file[?cyclic]") : cy.nodes(".file");
-    if (filtered) {
-      cy.nodes(".file").not(visible).addClass("hidden");
-      cy.nodes(".group").filter((group) => group.children(".file").not(".hidden").empty()).addClass("hidden");
-      cy.nodes(".lane").filter((lane) => lane.children(".group").not(".hidden").empty()).addClass("hidden");
-      cy.edges(".group-edge").addClass("hidden");
-      cy.edges(".file-edge").filter((edge) => edge.source().hasClass("hidden") || edge.target().hasClass("hidden")).addClass("hidden");
-    } else {
-      cy.edges(".file-edge").addClass("hidden");
-    }
-    if (selected) highlightAll(cy, selected);
-  });
-  syncSelection(cy, selected ? selectedId : null);
+  const scene = state.all.scene;
+  if (!scene) return;
+  const selected = state.all.selected && sceneHas(scene, state.all.selected) ? state.all.selected : null;
+  const look = allFilesLook(scene, selected, allOptions());
+  graphs.all.update({ selected, look: () => look });
   if (!relayout) return;
-  const visibleCount = cy.nodes(".file").not(".hidden").length;
-  if (state.all.layout === "force" && visibleCount > forceLayoutLimit) {
+  const visible = visibleFiles(scene, selected);
+  if (state.all.layout === "force" && visible.length > forceLayoutLimit) {
     state.all.layout = "structure";
     toast(`Force layout works on up to ${forceLayoutLimit} files. Use "Cycles only" or "Focus selection" first.`, true);
     renderLayoutOptions();
   }
   if (state.all.layout === "force") {
     state.all.moved = true;
-    runForceLayout(cy);
+    const links = scene.edges.filter((edge) => edge.id.startsWith("imports:")).map((edge) => ({ from: edge.source, to: edge.target }));
+    graphs.all.relayout(forceLayout(visible.map((node) => ({ id: node.id, cluster: node.parent })), links));
   } else {
-    if (state.all.moved) restoreStructure(cy, data());
+    if (state.all.moved) graphs.all.relayout(structureCenters(data()));
+    else graphs.all.fit();
     state.all.moved = false;
-    fitVisible(cy);
   }
 };
 
 const ensureAllGraph = () => {
-  if (state.cy.all) return;
-  const cy = createGraph(containerOf("all"), moduleElements(data()), state.color);
-  state.cy.all = cy;
-  sizeStructureLabels(cy);
-  wireCommonEvents(cy, "all");
-  cy.on("dbltap", "node.file", (event) => exploreFunctions((event.target as cytoscape.NodeSingular).id()));
-  if (state.all.selected && cy.getElementById(state.all.selected).empty()) state.all.selected = null;
+  if (graphs.all.mounted) return;
+  const scene = moduleScene(data());
+  state.all.scene = scene;
+  if (state.all.selected && !sceneHas(scene, state.all.selected)) state.all.selected = null;
+  graphs.all.show({
+    scene,
+    centers: structureCenters(data()),
+    selected: state.all.selected,
+    color: state.color,
+    look: () => allFilesLook(scene, state.all.selected, allOptions()),
+    hover: false,
+    placement: "fit",
+  });
   refreshAllGraph(elements.cyclesOnly.checked || state.all.focus || state.all.layout === "force");
 };
 
+const functionsFocusMode = (scene: Scene) =>
+  state.functions.focus && state.functions.selected !== null && sceneHas(scene, state.functions.selected);
+
+const visibleFunctions = (scene: Scene): Set<string> => {
+  const look = functionsLook(scene, null, state.functions.selected, functionsFocusMode(scene));
+  return new Set(scene.nodes.filter((node) => !look.hidden.has(node.id)).map((node) => node.id));
+};
+
+const functionCenters = (scene: Scene, visible: ReadonlySet<string>): Map<string, Point> => {
+  const nodes = scene.nodes.filter((node) => visible.has(node.id));
+  const links = scene.edges
+    .filter((edge) => visible.has(edge.source) && visible.has(edge.target))
+    .map((edge) => ({ from: edge.source, to: edge.target }));
+  return state.functions.layout === "breadthfirst"
+    ? layered(
+        nodes.map((node) => ({ id: node.id, width: 160, height: 44 })),
+        links,
+        { maxPerRow: 8, gapX: 30, gapY: 70 },
+      )
+    : forceLayout(
+        nodes.map((node) => ({ id: node.id })),
+        links,
+      );
+};
+
 const refreshFunctionGraph = (relayout: boolean) => {
-  const cy = state.cy.functions;
-  if (!cy) return;
+  const scene = state.functions.scene;
+  if (!scene) return;
   const id = state.functions.selected;
-  const selected = id && cy.getElementById(id).nonempty() ? cy.getElementById(id) : null;
-  const asEdge = selected as unknown as cytoscape.EdgeSingular | null;
-  const around = selected
-    ? selected.isNode()
-      ? selected.closedNeighborhood()
-      : (asEdge as cytoscape.EdgeSingular).union((asEdge as cytoscape.EdgeSingular).connectedNodes())
-    : null;
-  const filtered = state.functions.focus && around !== null;
-  cy.batch(() => {
-    cy.elements().removeClass("hidden");
-    if (filtered && around) cy.nodes().not(around.nodes()).addClass("hidden");
-  });
-  emphasise(cy, selected ? id : null);
-  syncSelection(cy, selected ? id : null);
+  const selected = id && sceneHas(scene, id) ? id : null;
+  const focusMode = functionsFocusMode(scene);
+  graphs.functions.update({ selected, look: (focus) => functionsLook(scene, focus, selected, focusMode) });
   if (!relayout) return;
-  if (filtered) {
-    state.functions.positions ??= new Map(cy.nodes().map((node) => [node.id(), { ...node.position() }]));
-    runForceLayout(cy, state.functions.layout === "breadthfirst");
+  if (focusMode) {
+    state.functions.positions ??= graphs.functions.positions();
+    graphs.functions.relayout(functionCenters(scene, visibleFunctions(scene)));
   } else if (state.functions.positions) {
-    const saved = state.functions.positions;
-    cy.nodes().positions((node) => saved.get(node.id()) ?? node.position());
+    graphs.functions.relayout(state.functions.positions);
     state.functions.positions = null;
-    fitVisible(cy);
   }
 };
 
@@ -422,36 +391,18 @@ const showTab = (tab: Tab) => {
     elements.graphs[name].hidden = name !== tab;
   });
   if (tab === "all") ensureAllGraph();
-  state.cy[tab]?.resize();
-};
-
-const centerOn = (cy: cytoscape.Core, id: string) => {
-  const element = cy.getElementById(id);
-  if (element.empty() || element.hasClass("hidden")) return;
-  cy.animate(
-    { center: { eles: element }, zoom: Math.max(cy.zoom(), element.isNode() && element.isParent() ? cy.zoom() : 1) },
-    { duration: 250 },
-  );
 };
 
 const selectIn = (tab: Tab, id: string | null) => {
   if (tab === "map") {
     state.map.selected = id;
-    mapGraph.select(id);
+    graphs.map.select(id);
   } else if (tab === "routes") {
     state.routes.item = id;
-    const cy = state.cy.routes;
-    if (cy) {
-      emphasise(cy, id);
-      syncSelection(cy, id);
-    }
+    graphs.routes.select(id);
   } else if (tab === "logic") {
     state.logic.selected = id;
-    const cy = state.cy.logic;
-    if (cy) {
-      highlightPaths(cy, id);
-      syncSelection(cy, id);
-    }
+    graphs.logic.select(id);
   } else if (tab === "all") {
     const refocus = state.all.focus && state.all.selected !== id;
     state.all.selected = id;
@@ -511,15 +462,15 @@ const revealModule = (moduleId: string) => {
 
 const openAllFiles = (id: string | null) => {
   showTab("all");
-  const cy = state.cy.all;
-  const hidden = id && cy ? cy.getElementById(id).hasClass("hidden") : false;
+  const scene = state.all.scene;
+  const hidden = id !== null && scene !== null && allFilesLook(scene, state.all.selected, allOptions()).hidden.has(id);
   if (hidden) {
     elements.cyclesOnly.checked = false;
     state.all.focus = false;
   }
   state.all.selected = id;
   refreshAllGraph(hidden);
-  if (cy && id) centerOn(cy, id);
+  if (id) graphs.all.center(id);
   refresh();
   writeHash(true);
 };
@@ -554,30 +505,29 @@ const openPath = (from: string, to: string) => {
 const exploreFunctions = (moduleId: string, functionId: string | null = null) => {
   const module = index().modules.get(moduleId);
   if (!module) return;
-  const sameModule = state.functions.explored === moduleId && state.cy.functions !== null;
+  const sameModule = state.functions.explored === moduleId && graphs.functions.mounted;
   showTab("functions");
   state.functions.explored = moduleId;
   if (!sameModule) {
-    state.cy.functions?.destroy();
     state.functions.selected = null;
     state.functions.focus = false;
     state.functions.positions = null;
     const functions = module.functionIds.flatMap((id) => index().functions.get(id) ?? []);
-    const cy = createGraph(
-      containerOf("functions"),
-      functionElements(functions, (id) => index().callsFrom.get(id) ?? []),
-      state.color,
-    );
-    state.cy.functions = cy;
-    wireCommonEvents(cy, "functions");
-    wireHover(cy, "functions");
-    cy.on("dbltap", "node", (event) => void openLogic((event.target as cytoscape.NodeSingular).id()));
-    runForceLayout(cy, state.functions.layout === "breadthfirst");
+    const scene = functionScene(functions, (id) => index().callsFrom.get(id) ?? []);
+    state.functions.scene = scene;
+    graphs.functions.show({
+      scene,
+      centers: functionCenters(scene, new Set(scene.nodes.map((node) => node.id))),
+      selected: null,
+      color: state.color,
+      look: (focus) => functionsLook(scene, focus, null, false),
+      hover: true,
+      placement: "fit",
+    });
   }
   state.functions.selected = functionId ?? (sameModule ? state.functions.selected : null);
   refreshFunctionGraph(false);
-  const cy = state.cy.functions;
-  if (cy && functionId) centerOn(cy, functionId);
+  if (functionId) graphs.functions.center(functionId);
   refresh();
   writeHash(true);
 };
@@ -585,31 +535,20 @@ const exploreFunctions = (moduleId: string, functionId: string | null = null) =>
 const renderLogicGraph = (refit: boolean) => {
   const logic = state.logic.data;
   if (!logic) return;
-  const previous = state.cy.logic;
-  const viewport = previous && !refit ? { zoom: previous.zoom(), pan: { ...previous.pan() } } : null;
-  previous?.destroy();
+  const viewport = !refit && graphs.logic.mounted ? graphs.logic.viewport() : null;
   const view = flowView(logic, state.logic.collapsed);
-  const cy = createGraph(containerOf("logic"), flowElements(view, flowPositions(view)), state.color);
-  state.cy.logic = cy;
-  wireCommonEvents(cy, "logic");
-  cy.on("dbltap", "node", (event) => {
-    const id = (event.target as cytoscape.NodeSingular).id();
-    const owner = id.startsWith("collapsed:") ? id.slice("collapsed:".length) : id;
-    const node = logic.nodes.find((candidate) => candidate.id === owner);
-    if (node && structuralKinds.has(node.kind)) toggleLogic(owner);
+  const scene = flowScene(view);
+  if (state.logic.selected && !sceneHas(scene, state.logic.selected)) state.logic.selected = null;
+  const start = view.items.find((item) => item.kind === "start");
+  graphs.logic.show({
+    scene,
+    centers: flowPositions(view),
+    selected: state.logic.selected,
+    color: state.color,
+    look: (focus) => pathLook(scene, focus),
+    hover: false,
+    placement: viewport ? { viewport } : start ? { top: start.id } : "fit",
   });
-  if (state.logic.selected && cy.getElementById(state.logic.selected).empty()) state.logic.selected = null;
-  highlightPaths(cy, state.logic.selected);
-  syncSelection(cy, state.logic.selected);
-  if (viewport) cy.viewport(viewport);
-  else {
-    fitVisible(cy);
-    if (cy.zoom() < 0.55) {
-      cy.zoom(0.9);
-      cy.center(cy.nodes(".flow-start"));
-      cy.panBy({ x: 0, y: -(cy.height() / 2 - 60) });
-    }
-  }
 };
 
 const toggleLogic = (id: string) => {
@@ -979,7 +918,7 @@ const updateEmptyState = () => {
   if (!state.snapshot) return showEmpty("Loading…");
   if (data().modules.length === 0) return showEmpty(`No .js, .jsx, .ts, .tsx or .svelte files found in ${data().root}.`);
   if (state.tab === "routes" && !state.routes.selected) return showEmpty("Pick a route from the list on the right.");
-  if (state.tab === "all" && state.cy.all && state.cy.all.nodes(".file").not(".hidden").empty()) {
+  if (state.tab === "all" && state.all.scene && visibleFiles(state.all.scene, state.all.selected).length === 0) {
     return showEmpty("No import cycles found.");
   }
   if (state.tab === "functions") {
@@ -1031,15 +970,15 @@ const setSnapshot = (snapshot: GraphSnapshot) => {
   elements.projectName.textContent = snapshot.name;
   elements.scanInfo.textContent = `Scanned ${new Date(snapshot.scannedAt).toLocaleTimeString()} in ${snapshot.durationMs} ms`;
   renderDiagnostics();
-  state.cy.all?.destroy();
-  state.cy.all = null;
+  graphs.all.clear();
+  state.all.scene = null;
   state.all.moved = false;
   if (state.map.path && state.map.path.some((id) => !index().modules.has(id))) state.map.path = null;
   if (state.routes.selected && !index().routes.has(state.routes.selected)) state.routes.selected = null;
   if (state.functions.explored && !index().modules.has(state.functions.explored)) {
     state.functions.explored = null;
-    state.cy.functions?.destroy();
-    state.cy.functions = null;
+    graphs.functions.clear();
+    state.functions.scene = null;
     if (state.tab === "functions") state.tab = state.previousTab;
   }
 };
@@ -1095,8 +1034,7 @@ const rescan = async () => {
     if (state.tab === "functions" && state.functions.explored) {
       const explored = state.functions.explored;
       const selected = state.functions.selected;
-      state.cy.functions?.destroy();
-      state.cy.functions = null;
+      graphs.functions.clear();
       exploreFunctions(explored, selected && index().functions.has(selected) ? selected : null);
     }
     state.applyingHash = false;
@@ -1196,7 +1134,6 @@ const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
 
 const wireToolbar = () => {
-  (Object.keys(elements.graphs) as Tab[]).forEach((tab) => wheelZoom(elements.graphs[tab], () => state.cy[tab]));
   elements.tabs.map.addEventListener("click", () => openMapNode(state.map.node, state.map.selected));
   elements.tabs.routes.addEventListener("click", () => openRoute(state.routes.selected));
   elements.tabs.all.addEventListener("click", () => openAllFiles(state.all.selected));
@@ -1211,8 +1148,7 @@ const wireToolbar = () => {
   });
   elements.color.addEventListener("change", () => {
     state.color = elements.color.value === "complexity" ? "complexity" : "side";
-    Object.values(state.cy).forEach((cy) => cy?.style(graphStyle(state.color)));
-    mapGraph.setColor(state.color);
+    Object.values(graphs).forEach((graph) => graph.setColor(state.color));
     refresh();
     writeHash(false);
   });
@@ -1226,9 +1162,7 @@ const wireToolbar = () => {
     }),
   );
   elements.fit.addEventListener("click", () => {
-    const cy = state.cy[state.tab];
-    if (cy) fitVisible(cy);
-    else if (state.tab === "map") mapGraph.fit();
+    graphs[state.tab].fit();
   });
   elements.rescan.addEventListener("click", () => void rescan());
   elements.layout.addEventListener("change", () => {
@@ -1237,8 +1171,8 @@ const wireToolbar = () => {
       refreshAllGraph(true);
     } else {
       state.functions.layout = elements.layout.value === "breadthfirst" ? "breadthfirst" : "cose";
-      const cy = state.cy.functions;
-      if (cy) runForceLayout(cy, state.functions.layout === "breadthfirst");
+      const scene = state.functions.scene;
+      if (scene) graphs.functions.relayout(functionCenters(scene, visibleFunctions(scene)));
     }
   });
   elements.cyclesOnly.addEventListener("change", () => {
@@ -1258,7 +1192,6 @@ const wireToolbar = () => {
   elements.warnings.addEventListener("click", () => {
     elements.diagnostics.hidden = !elements.diagnostics.hidden;
     elements.warnings.setAttribute("aria-expanded", String(!elements.diagnostics.hidden));
-    state.cy[state.tab]?.resize();
   });
   elements.closeDiagnostics.addEventListener("click", () => {
     elements.diagnostics.hidden = true;
@@ -1305,9 +1238,6 @@ const wireToolbar = () => {
   window.addEventListener("popstate", () => {
     if (state.snapshot) applyHash();
   });
-  window
-    .matchMedia("(prefers-color-scheme: dark)")
-    .addEventListener("change", () => Object.values(state.cy).forEach((cy) => cy?.style(graphStyle(state.color))));
 };
 
 const start = async () => {
