@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { NodeProps } from "@xyflow/svelte";
   import { getContext } from "svelte";
-  import { type DotData, type GraphContext, graphContext } from "../scene";
-  import CenterHandles from "./CenterHandles.svelte";
+  import { type DotData, type GraphContext, graphContext, has, mark } from "../scene";
 
   let { id, data }: NodeProps & { data: DotData } = $props();
 
   const graph = getContext<GraphContext>(graphContext);
+  const flags = $derived(graph.mark(id));
 
   const fill = $derived(
     data.tint === "bucket" || graph.color === "complexity"
@@ -17,8 +17,8 @@
 
 <div
   class="dot-node"
-  class:dim={graph.look.dim.has(id)}
-  class:selected={graph.selected === id}
+  class:dim={has(flags, mark.dim)}
+  class:selected={has(flags, mark.selected)}
   class:cyclic={data.cyclic}
   class:entry={data.entry}
   style:--fill={fill}
@@ -29,7 +29,6 @@
 >
   <span class="dot"></span>
   <span class="caption">{data.label}</span>
-  <CenterHandles />
 </div>
 
 <style>

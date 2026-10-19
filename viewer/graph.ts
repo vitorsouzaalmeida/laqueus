@@ -2,11 +2,8 @@ import type { Side } from "../src/model";
 import { type LayoutNode, type Point, layered } from "./layered";
 import type { MapItem, MapLink, MapView } from "./map";
 
-export type ModuleLayout = "structure" | "force";
 export type FunctionLayout = "cose" | "breadthfirst";
 export type ColorMode = "side" | "complexity";
-
-export const forceLayoutLimit = 300;
 
 export const ccBucket = (value: number | null) =>
   value === null ? 0 : value < 5 ? 1 : value < 10 ? 2 : value < 20 ? 3 : 4;

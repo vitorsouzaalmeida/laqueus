@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { type EdgeTypes, type NodeTypes, SvelteFlow } from "@xyflow/svelte";
+  import { type NodeTypes, SvelteFlow } from "@xyflow/svelte";
   import "@xyflow/svelte/dist/style.css";
   import { setContext, untrack } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import type { ColorMode } from "../graph";
   import {
     type GraphContext,
@@ -16,17 +17,16 @@
     centersOf,
     edgeZ,
     graphContext,
-    nestNodes,
+    markOf,
     shapeOf,
     toFlowEdges,
+    toFlowNodes,
   } from "../scene";
   import CardNode from "./CardNode.svelte";
-  import ContainerNode from "./ContainerNode.svelte";
   import DotNode from "./DotNode.svelte";
+  import EdgeLayer from "./EdgeLayer.svelte";
   import FlowNode from "./FlowNode.svelte";
   import GraphViewport from "./GraphViewport.svelte";
-  import LinkEdge from "./LinkEdge.svelte";
-  import StepEdge from "./StepEdge.svelte";
 
   type Props = {
     scene: Scene;
@@ -49,66 +49,88 @@
 
   const hiddenNodes = (current: Look) => new Set(scene.nodes.filter((node) => current.hidden.has(node.id)).map((node) => node.id));
   const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((id) => b.has(id));
+  const sameList = <T,>(a: readonly T[], b: readonly T[]) => a.length === b.length && a.every((item, position) => item === b[position]);
+
+  const marks = new SvelteMap<string, number>();
+  // svelte-ignore state_referenced_locally
+  const ids = [...scene.nodes.map((node) => node.id), ...scene.edges.map((edge) => edge.id)];
+  const writeMarks = (current: Look, selectedId: string | null) =>
+    ids
+      .map((id) => [id, markOf(current, selectedId, id)] as const)
+      .filter(([id, flags]) => marks.get(id) !== flags)
+      .forEach(([id, flags]) => marks.set(id, flags));
+
+  // svelte-ignore state_referenced_locally
+  const allEdges = toFlowEdges(scene);
+  const shownEdges = (current: Look, hidden: ReadonlySet<string>, selectedId: string | null, previous: readonly GraphEdge[]) => {
+    const before = new Map(previous.map((edge) => [edge.id, edge]));
+    return allEdges.flatMap((edge) => {
+      if (current.hidden.has(edge.id) || hidden.has(edge.source) || hidden.has(edge.target)) return [];
+      const raised = current.outgoing.has(edge.id) || current.incoming.has(edge.id) || current.path.has(edge.id) || selectedId === edge.id;
+      const zIndex = raised ? edgeZ.raised : edgeZ.normal;
+      const kept = before.get(edge.id) ?? edge;
+      return [kept.zIndex === zIndex ? kept : { ...edge, zIndex }];
+    });
+  };
 
   // The component is remounted for every scene; afterwards only layouts, filters and dragging change these.
   // svelte-ignore state_referenced_locally
+  untrack(() => writeMarks(look, selected));
+  // svelte-ignore state_referenced_locally
   const initialHidden = hiddenNodes(look);
   // svelte-ignore state_referenced_locally
-  let nodes = $state.raw<GraphNode[]>(nestNodes(scene, layout.centers, initialHidden));
+  let nodes = $state.raw<GraphNode[]>(toFlowNodes(scene, layout.centers, initialHidden));
   // svelte-ignore state_referenced_locally
-  let edges = $state.raw<GraphEdge[]>(toFlowEdges(scene));
+  let edges = $state.raw<GraphEdge[]>(shownEdges(look, initialHidden, selected, []));
   let fitSignal = $state(0);
   // svelte-ignore state_referenced_locally
   let applied = { layout, hidden: initialHidden };
 
+  $effect.pre(() => {
+    const current = look;
+    const selectedId = selected;
+    untrack(() => writeMarks(current, selectedId));
+  });
+
   $effect(() => {
     const next = layout;
     const current = look;
+    const selectedId = selected;
     untrack(() => {
       const hidden = hiddenNodes(current);
       const moved = next !== applied.layout;
       if (moved || !sameSet(hidden, applied.hidden)) {
         const centers = moved ? new Map([...centersOf(nodes), ...next.centers]) : centersOf(nodes);
-        nodes = nestNodes(scene, centers, hidden);
+        nodes = toFlowNodes(scene, centers, hidden);
         if (moved && next.fit) fitSignal += 1;
         applied = { layout: next, hidden };
       }
-      edges = edges.map((edge) => {
-        const isHidden = current.hidden.has(edge.id) || hidden.has(edge.source) || hidden.has(edge.target);
-        const raised = current.outgoing.has(edge.id) || current.incoming.has(edge.id) || current.path.has(edge.id) || selected === edge.id;
-        const zIndex = raised ? edgeZ.raised : edgeZ.normal;
-        return (edge.hidden ?? false) === isHidden && edge.zIndex === zIndex ? edge : { ...edge, hidden: isHidden, zIndex };
-      });
+      const shown = shownEdges(current, hidden, selectedId, edges);
+      if (!sameList(shown, edges)) edges = shown;
     });
   });
 
   const shapes = $derived(new Map(nodes.map((node) => [node.id, shapeOf(node)])));
+  const centers = $derived(centersOf(nodes));
 
   setContext<GraphContext>(graphContext, {
-    get look() {
-      return look;
-    },
-    get selected() {
-      return selected;
-    },
+    mark: (id) => marks.get(id) ?? 0,
     get color() {
       return color;
     },
     get shapes() {
       return shapes;
     },
+    select: (id) => onselect(id),
     open: (id) => onopen(id),
   });
 
-  const nodeTypes: NodeTypes = { card: CardNode, dot: DotNode, container: ContainerNode, flow: FlowNode };
-  const edgeTypes: EdgeTypes = { link: LinkEdge, step: StepEdge };
+  const nodeTypes: NodeTypes = { card: CardNode, dot: DotNode, flow: FlowNode };
 </script>
 
 <SvelteFlow
   bind:nodes
-  bind:edges
   {nodeTypes}
-  {edgeTypes}
   zIndexMode="manual"
   minZoom={0.02}
   maxZoom={4}
@@ -119,23 +141,18 @@
   zoomOnDoubleClick={false}
   deleteKey={null}
   onnodeclick={({ node }) => onselect(node.id)}
-  onedgeclick={({ edge }) => onselect(edge.id)}
   onpaneclick={() => onselect(null)}
   onnodepointerenter={({ node }) => {
     if (hover) hovered = node.id;
   }}
   onnodepointerleave={() => (hovered = null)}
-  onnodedragstop={() => (nodes = nestNodes(scene, centersOf(nodes), applied.hidden))}
 >
+  <EdgeLayer {edges} {centers} />
   <GraphViewport {placement} {fitSignal} {frame} {onready} />
 </SvelteFlow>
 
 <style>
   :global(.svelte-flow) {
     --xy-background-color: transparent;
-  }
-
-  :global(.svelte-flow__node.graph-lane) {
-    pointer-events: none;
   }
 </style>

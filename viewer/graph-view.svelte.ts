@@ -6,9 +6,11 @@ import { type GraphControls, type Layout, type LookFn, type Placement, type Scen
 
 export type GraphHandlers = { select: (id: string | null) => void; open: (id: string) => void };
 
+export type Centers = ReadonlyMap<string, Point> | Promise<ReadonlyMap<string, Point>>;
+
 export type ShowOptions = {
   scene: Scene;
-  centers: ReadonlyMap<string, Point>;
+  centers: Centers;
   selected: string | null;
   color: ColorMode;
   look: LookFn;
@@ -30,6 +32,9 @@ export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) =>
     app: null as ReturnType<typeof mount> | null,
     controls: null as GraphControls | null,
     pendingCenter: null as string | null,
+    scene: {},
+    layout: {},
+    waiting: false,
   };
 
   const clear = () => {
@@ -37,46 +42,60 @@ export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) =>
     live.app = null;
     live.controls = null;
     live.pendingCenter = null;
+    live.scene = {};
+    live.layout = {};
+    live.waiting = false;
   };
 
   return {
     get mounted() {
-      return live.app !== null;
+      return live.app !== null || live.waiting;
     },
     show: (options: ShowOptions) => {
       clear();
       ui.selected = options.selected;
       ui.color = options.color;
       ui.look = options.look;
-      layout = { centers: options.centers, fit: false };
-      live.app = mount(Graph, {
-        target,
-        props: {
-          scene: options.scene,
-          get layout() {
-            return layout;
+      const scene = live.scene;
+      const layouts = live.layout;
+      const before = layout;
+      const start = (centers: ReadonlyMap<string, Point>) => {
+        if (scene !== live.scene) return;
+        live.waiting = false;
+        if (layouts === live.layout || layout === before) layout = { centers, fit: false };
+        live.app = mount(Graph, {
+          target,
+          props: {
+            scene: options.scene,
+            get layout() {
+              return layout;
+            },
+            placement: options.placement,
+            hover: options.hover,
+            frame: target,
+            get selected() {
+              return ui.selected;
+            },
+            get color() {
+              return ui.color;
+            },
+            get look() {
+              return ui.look;
+            },
+            onselect: handlers.select,
+            onopen: handlers.open,
+            onready: (controls: GraphControls) => {
+              live.controls = controls;
+              if (live.pendingCenter) controls.center(live.pendingCenter);
+              live.pendingCenter = null;
+            },
           },
-          placement: options.placement,
-          hover: options.hover,
-          frame: target,
-          get selected() {
-            return ui.selected;
-          },
-          get color() {
-            return ui.color;
-          },
-          get look() {
-            return ui.look;
-          },
-          onselect: handlers.select,
-          onopen: handlers.open,
-          onready: (controls: GraphControls) => {
-            live.controls = controls;
-            if (live.pendingCenter) controls.center(live.pendingCenter);
-            live.pendingCenter = null;
-          },
-        },
-      });
+        });
+      };
+      if (options.centers instanceof Promise) {
+        live.waiting = true;
+        void options.centers.then(start);
+      } else start(options.centers);
     },
     clear,
     select: (id: string | null) => {
@@ -90,8 +109,14 @@ export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) =>
       ui.color = color;
     },
     /** Moves the given nodes (others keep their place) and refits. */
-    relayout: (centers: ReadonlyMap<string, Point>, fit = true) => {
-      layout = { centers, fit };
+    relayout: (centers: Centers, fit = true) => {
+      const run = {};
+      live.layout = run;
+      if (!(centers instanceof Promise)) layout = { centers, fit };
+      else
+        void centers.then((resolved) => {
+          if (run === live.layout) layout = { centers: resolved, fit };
+        });
     },
     /** Waits for pending filter and layout changes to reach the graph before moving the view. */
     fit: () => void tick().then(() => live.controls?.fit()),

@@ -1,20 +1,25 @@
 <script lang="ts">
-  import { BaseEdge, type EdgeProps, EdgeLabel, Position, getSmoothStepPath } from "@xyflow/svelte";
+  import { Position, getSmoothStepPath } from "@xyflow/svelte";
   import { getContext } from "svelte";
-  import { type GraphContext, type GraphEdge, type Shape, arrowHead, edgePaint, edgeTone, graphContext } from "../scene";
+  import type { Point } from "../layered";
+  import { type EdgeData, type GraphContext, type Shape, arrowHead, edgePaint, edgeTone, graphContext } from "../scene";
+  import EdgeLine from "./EdgeLine.svelte";
 
-  let { id, source, target, sourceX, sourceY, targetX, targetY, data }: EdgeProps<GraphEdge> = $props();
+  type Props = { id: string; source: string; target: string; from: Point; to: Point; data: EdgeData };
+
+  let { id, source, target, from, to, data }: Props = $props();
 
   const graph = getContext<GraphContext>(graphContext);
 
   const halfHeight = (shape: Shape | undefined) =>
     shape === undefined ? 0 : shape.kind === "circle" ? shape.radius : shape.halfHeight;
 
-  const tone = $derived(edgeTone(graph.look, graph.selected, id));
-  const paint = $derived(edgePaint(tone, graph.look, id, data));
+  const flags = $derived(graph.mark(id));
+  const tone = $derived(edgeTone(flags));
+  const paint = $derived(edgePaint(tone, flags, data));
   const geometry = $derived.by(() => {
-    const start = { x: sourceX, y: sourceY + halfHeight(graph.shapes.get(source)) };
-    const tip = { x: targetX, y: targetY - halfHeight(graph.shapes.get(target)) };
+    const start = { x: from.x, y: from.y + halfHeight(graph.shapes.get(source)) };
+    const tip = { x: to.x, y: to.y - halfHeight(graph.shapes.get(target)) };
     const arrow = arrowHead(tip, { x: 0, y: 1 }, paint.width);
     const [path, labelX, labelY] = getSmoothStepPath({
       sourceX: start.x,
@@ -31,20 +36,4 @@
   });
 </script>
 
-<BaseEdge
-  {id}
-  path={geometry.path}
-  style="stroke: {paint.stroke}; stroke-width: {paint.width}px;{paint.dash ? ` stroke-dasharray: ${paint.dash};` : ''}"
-/>
-<polygon class="arrow" points={geometry.arrow} fill={paint.stroke} />
-{#if data?.label}
-  <EdgeLabel x={geometry.label.x} y={geometry.label.y} class="graph-edge-label" style="color: {paint.label};">
-    {data.label}
-  </EdgeLabel>
-{/if}
-
-<style>
-  .arrow {
-    pointer-events: none;
-  }
-</style>
+<EdgeLine {id} path={geometry.path} arrow={geometry.arrow} at={geometry.label} label={data.label} {paint} />

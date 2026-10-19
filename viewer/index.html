@@ -10,12 +10,10 @@
     <header class="toolbar">
       <div class="brand">
         <strong id="project-name">Laqueus</strong>
-        <span id="scan-info" class="muted"></span>
       </div>
       <div class="segmented" role="tablist" aria-label="View">
         <button id="tab-map" role="tab" class="active" aria-selected="true">Map</button>
         <button id="tab-routes" role="tab" aria-selected="false">Routes</button>
-        <button id="tab-all" role="tab" aria-selected="false">All files</button>
         <button id="tab-functions" role="tab" aria-selected="false" disabled>Functions</button>
       </div>
       <div class="search">
@@ -41,13 +39,12 @@
           <label class="chip-toggle"><input type="checkbox" data-tray="unreached" /> Not reached</label>
         </span>
       </span>
-      <select id="color" aria-label="Color" data-tabs="map routes all">
+      <select id="color" aria-label="Color" data-tabs="map routes">
         <option value="side">Color by side</option>
         <option value="complexity">Color by complexity</option>
       </select>
-      <label class="toggle" data-tabs="all"><input id="cycles-only" type="checkbox" /> Cycles only</label>
-      <label class="toggle" data-tabs="all functions"><input id="focus" type="checkbox" disabled /> Focus selection</label>
-      <select id="layout" aria-label="Layout" data-tabs="all functions"></select>
+      <label class="toggle" data-tabs="functions"><input id="focus" type="checkbox" disabled /> Focus selection</label>
+      <select id="layout" aria-label="Layout" data-tabs="functions"></select>
       <button id="fit">Fit</button>
       <button id="rescan">Rescan</button>
       <button id="warnings" class="warnings" aria-expanded="false">0 warnings</button>
@@ -57,7 +54,6 @@
         <div id="crumbs" class="crumbs"></div>
         <div id="map-graph" class="graph"></div>
         <div id="routes-graph" class="graph" hidden></div>
-        <div id="modules-graph" class="graph" hidden></div>
         <div id="functions-graph" class="graph" hidden></div>
         <div id="logic-graph" class="graph" hidden></div>
         <div id="empty" class="empty" hidden></div>

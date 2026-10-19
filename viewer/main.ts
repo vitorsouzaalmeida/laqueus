@@ -1,12 +1,12 @@
 import type { FunctionLogic, GraphSnapshot, Side } from "../src/model";
-import { type Index, buildIndex, folderLabel, lineRef, moduleIdOf, routeLabel, splitEdgeId } from "./data";
+import { type Index, buildIndex, lineRef, moduleIdOf, routeLabel, splitEdgeId } from "./data";
 import { basename, byId, h, plural } from "./dom";
 import { defaultCollapsed, flowPositions, flowView, structuralKinds } from "./flow";
-import { forceLayout } from "./force";
-import { type ColorMode, type FunctionLayout, type ModuleLayout, bucketLabels, forceLayoutLimit, mapPositions, sidesPositions } from "./graph";
-import { type GraphView, createGraphView } from "./graph-view.svelte";
+import { forceLayoutAsync } from "./force-async";
+import { type ColorMode, type FunctionLayout, bucketLabels, mapPositions, sidesPositions } from "./graph";
+import { type Centers, type GraphView, createGraphView } from "./graph-view.svelte";
 import { type Point, layered } from "./layered";
-import { allFilesLook, functionsLook, neighbourhoodLook, pathLook } from "./looks";
+import { functionsLook, neighbourhoodLook, pathLook } from "./looks";
 import {
   type Grouping,
   type MapView,
@@ -25,11 +25,8 @@ import {
 import {
   type PanelContext,
   callEdgePanel,
-  folderEdgePanel,
-  folderPanel,
   functionPanel,
   functionsOverviewPanel,
-  importEdgePanel,
   linkPanel,
   logicPanel,
   modulePanel,
@@ -41,24 +38,21 @@ import {
   routesListPanel,
 } from "./panels";
 import type { Scene } from "./scene";
-import { flowScene, functionScene, mapScene, moduleScene, structureCenters } from "./scenes";
+import { flowScene, functionScene, mapScene } from "./scenes";
 
-type Tab = "map" | "routes" | "all" | "functions" | "logic";
+type Tab = "map" | "routes" | "functions" | "logic";
 type SearchHit = { label: string; detail: string; run: () => void };
 
 const elements = {
   projectName: byId<HTMLElement>("project-name"),
-  scanInfo: byId<HTMLElement>("scan-info"),
   tabs: {
     map: byId<HTMLButtonElement>("tab-map"),
     routes: byId<HTMLButtonElement>("tab-routes"),
-    all: byId<HTMLButtonElement>("tab-all"),
     functions: byId<HTMLButtonElement>("tab-functions"),
   },
   graphs: {
     map: byId<HTMLElement>("map-graph"),
     routes: byId<HTMLElement>("routes-graph"),
-    all: byId<HTMLElement>("modules-graph"),
     functions: byId<HTMLElement>("functions-graph"),
     logic: byId<HTMLElement>("logic-graph"),
   },
@@ -66,7 +60,6 @@ const elements = {
   searchResults: byId<HTMLUListElement>("search-results"),
   grouping: byId<HTMLSelectElement>("grouping"),
   color: byId<HTMLSelectElement>("color"),
-  cyclesOnly: byId<HTMLInputElement>("cycles-only"),
   focus: byId<HTMLInputElement>("focus"),
   layout: byId<HTMLSelectElement>("layout"),
   fit: byId<HTMLButtonElement>("fit"),
@@ -100,13 +93,6 @@ const state = {
     view: null as MapView | null,
   },
   routes: { selected: null as string | null, item: null as string | null, filter: "", view: null as RouteView | null },
-  all: {
-    selected: null as string | null,
-    focus: false,
-    layout: "structure" as ModuleLayout,
-    moved: false,
-    scene: null as Scene | null,
-  },
   functions: {
     explored: null as string | null,
     selected: null as string | null,
@@ -165,7 +151,6 @@ const writeHash = (push: boolean) => {
     if (state.routes.selected) params.set("route", state.routes.selected);
     if (state.routes.item) params.set("item", state.routes.item);
   }
-  if (state.tab === "all" && state.all.selected) params.set("sel", state.all.selected);
   if (state.tab === "functions" && state.functions.explored) {
     params.set("file", state.functions.explored);
     if (state.functions.selected) params.set("fn", state.functions.selected);
@@ -197,7 +182,6 @@ const panelContext = (): PanelContext => ({
     logic: (functionId) => void openLogic(functionId),
     route: (routeId) => openRoute(routeId),
     routeItem: (itemId) => selectIn("routes", itemId),
-    allFilesItem: (id) => openAllFiles(id),
     path: (from, to) => openPath(from, to),
     pathPicker: (from) => {
       state.pathPickerFrom = from;
@@ -212,11 +196,9 @@ const currentSelection = (tab: Tab) =>
     ? state.map.selected
     : tab === "routes"
       ? state.routes.item
-      : tab === "all"
-        ? state.all.selected
-        : tab === "logic"
-          ? state.logic.selected
-          : state.functions.selected;
+      : tab === "logic"
+        ? state.logic.selected
+        : state.functions.selected;
 
 const containerOf = (tab: Tab) => elements.graphs[tab];
 
@@ -238,12 +220,6 @@ const toggleStructural = (id: string) => {
 const graphs: Record<Tab, GraphView> = {
   map: createGraphView(containerOf("map"), { select: (id) => selectIn("map", id), open: (id) => openItem(id) }),
   routes: createGraphView(containerOf("routes"), { select: (id) => selectIn("routes", id), open: (id) => openRouteItem(id) }),
-  all: createGraphView(containerOf("all"), {
-    select: (id) => selectIn("all", id),
-    open: (id) => {
-      if (id.startsWith("module:")) exploreFunctions(id);
-    },
-  }),
   functions: createGraphView(containerOf("functions"), {
     select: (id) => selectIn("functions", id),
     open: (id) => void openLogic(id),
@@ -294,54 +270,6 @@ const renderRoutesGraph = () => {
   });
 };
 
-const allOptions = () => ({ focus: state.all.focus, cyclesOnly: elements.cyclesOnly.checked });
-
-const visibleFiles = (scene: Scene, selected: string | null) => {
-  const look = allFilesLook(scene, selected, allOptions());
-  return scene.nodes.filter((node) => node.id.startsWith("module:") && !look.hidden.has(node.id));
-};
-
-const refreshAllGraph = (relayout: boolean) => {
-  const scene = state.all.scene;
-  if (!scene) return;
-  const selected = state.all.selected && sceneHas(scene, state.all.selected) ? state.all.selected : null;
-  const look = allFilesLook(scene, selected, allOptions());
-  graphs.all.update({ selected, look: () => look });
-  if (!relayout) return;
-  const visible = visibleFiles(scene, selected);
-  if (state.all.layout === "force" && visible.length > forceLayoutLimit) {
-    state.all.layout = "structure";
-    toast(`Force layout works on up to ${forceLayoutLimit} files. Use "Cycles only" or "Focus selection" first.`, true);
-    renderLayoutOptions();
-  }
-  if (state.all.layout === "force") {
-    state.all.moved = true;
-    const links = scene.edges.filter((edge) => edge.id.startsWith("imports:")).map((edge) => ({ from: edge.source, to: edge.target }));
-    graphs.all.relayout(forceLayout(visible.map((node) => ({ id: node.id, cluster: node.parent })), links));
-  } else {
-    if (state.all.moved) graphs.all.relayout(structureCenters(data()));
-    else graphs.all.fit();
-    state.all.moved = false;
-  }
-};
-
-const ensureAllGraph = () => {
-  if (graphs.all.mounted) return;
-  const scene = moduleScene(data());
-  state.all.scene = scene;
-  if (state.all.selected && !sceneHas(scene, state.all.selected)) state.all.selected = null;
-  graphs.all.show({
-    scene,
-    centers: structureCenters(data()),
-    selected: state.all.selected,
-    color: state.color,
-    look: () => allFilesLook(scene, state.all.selected, allOptions()),
-    hover: false,
-    placement: "fit",
-  });
-  refreshAllGraph(elements.cyclesOnly.checked || state.all.focus || state.all.layout === "force");
-};
-
 const functionsFocusMode = (scene: Scene) =>
   state.functions.focus && state.functions.selected !== null && sceneHas(scene, state.functions.selected);
 
@@ -350,7 +278,7 @@ const visibleFunctions = (scene: Scene): Set<string> => {
   return new Set(scene.nodes.filter((node) => !look.hidden.has(node.id)).map((node) => node.id));
 };
 
-const functionCenters = (scene: Scene, visible: ReadonlySet<string>): Map<string, Point> => {
+const functionCenters = (scene: Scene, visible: ReadonlySet<string>): Centers => {
   const nodes = scene.nodes.filter((node) => visible.has(node.id));
   const links = scene.edges
     .filter((edge) => visible.has(edge.source) && visible.has(edge.target))
@@ -361,7 +289,7 @@ const functionCenters = (scene: Scene, visible: ReadonlySet<string>): Map<string
         links,
         { maxPerRow: 8, gapX: 30, gapY: 70 },
       )
-    : forceLayout(
+    : forceLayoutAsync(
         nodes.map((node) => ({ id: node.id })),
         links,
       );
@@ -390,7 +318,6 @@ const showTab = (tab: Tab) => {
   (Object.keys(elements.graphs) as Tab[]).forEach((name) => {
     elements.graphs[name].hidden = name !== tab;
   });
-  if (tab === "all") ensureAllGraph();
 };
 
 const selectIn = (tab: Tab, id: string | null) => {
@@ -403,11 +330,6 @@ const selectIn = (tab: Tab, id: string | null) => {
   } else if (tab === "logic") {
     state.logic.selected = id;
     graphs.logic.select(id);
-  } else if (tab === "all") {
-    const refocus = state.all.focus && state.all.selected !== id;
-    state.all.selected = id;
-    if (id === null) state.all.focus = false;
-    refreshAllGraph(refocus);
   } else {
     const refocus = state.functions.focus && state.functions.selected !== id;
     state.functions.selected = id;
@@ -449,7 +371,6 @@ const syncTrayInputs = () =>
   });
 
 const revealModule = (moduleId: string) => {
-  if (state.tab === "all") return openAllFiles(moduleId);
   const module = index().modules.get(moduleId);
   if (!module) return;
   if (!tree().pathOf.has(moduleId) && traySides.includes(module.placement.side)) {
@@ -458,21 +379,6 @@ const revealModule = (moduleId: string) => {
     rebuildTree();
   }
   openMapNode(deepestNode(tree(), moduleId) ?? "root", moduleId);
-};
-
-const openAllFiles = (id: string | null) => {
-  showTab("all");
-  const scene = state.all.scene;
-  const hidden = id !== null && scene !== null && allFilesLook(scene, state.all.selected, allOptions()).hidden.has(id);
-  if (hidden) {
-    elements.cyclesOnly.checked = false;
-    state.all.focus = false;
-  }
-  state.all.selected = id;
-  refreshAllGraph(hidden);
-  if (id) graphs.all.center(id);
-  refresh();
-  writeHash(true);
 };
 
 const openRoute = (routeId: string | null) => {
@@ -594,9 +500,8 @@ const goUp = () => {
     return;
   }
   if (state.tab === "functions") {
-    if (state.previousTab === "map") openMapNode(state.map.node, state.map.selected);
-    else if (state.previousTab === "routes") openRoute(state.routes.selected);
-    else openAllFiles(state.functions.explored);
+    if (state.previousTab === "routes") openRoute(state.routes.selected);
+    else openMapNode(state.map.node, state.map.selected);
     return;
   }
   if (state.tab === "routes") {
@@ -651,11 +556,9 @@ const renderCrumbs = () => {
         ),
         h("span", { class: "muted" }, ` · ${count}`),
       ),
-      hintLine(
-        mode === "cards"
-          ? "Double-click a card (or select it and press Enter) to open it · Backspace goes up · Hover to see what it uses"
-          : "Double-click a file to see its functions · Dashed cards are outside this view · Backspace goes up",
-      ),
+      ...(mode === "cards"
+        ? [hintLine("Double-click a card (or select it and press Enter) to open it · Backspace goes up · Hover to see what it uses")]
+        : []),
     );
     return;
   }
@@ -674,13 +577,6 @@ const renderCrumbs = () => {
           ? "Left: client side · Right: server side · Top: route files · Cards: everything reached further down"
           : "Pick a route from the list on the right.",
       ),
-    );
-    return;
-  }
-  if (state.tab === "all") {
-    elements.crumbs.replaceChildren(
-      h("div", {}, crumb("All files", null)),
-      hintLine("Every file at once, by side and folder. Select a file to see its own imports."),
     );
     return;
   }
@@ -725,27 +621,8 @@ const sideSwatches = () =>
     "div",
     { class: "swatches" },
     ...data()
-      .lanes.filter((lane) => !traySides.includes(lane.side) || state.map.tray.has(lane.side) || state.tab === "all")
+      .lanes.filter((lane) => !traySides.includes(lane.side) || state.map.tray.has(lane.side))
       .map((lane) => h("span", { class: "swatch" }, swatch(`--side-${lane.side}`), lane.label)),
-  );
-
-const helpDetails = (title: string, ...paragraphs: string[]) =>
-  h("details", {}, h("summary", {}, title), ...paragraphs.map((text) => h("p", {}, text)));
-
-const complexityHelp = () =>
-  helpDetails(
-    "How CC is counted",
-    "Classic cyclomatic complexity, like ESLint's complexity rule. Each function starts at 1 and gets +1 for every if, for, for…in, for…of, while, do…while, catch, ?:, non-default case, &&, ||, ??, logical assignment, default value and optional chain (?.).",
-    "Nested functions are scored on their own. Top-level module code and Svelte markup are not measured. A high score means a function is worth reading closely, not that it is wrong.",
-  );
-
-const placementHelp = () =>
-  helpDetails(
-    "How sides and areas are found",
-    data().framework === "sveltekit"
-      ? "Sides follow SvelteKit's rules: starting from the files SvelteKit loads itself (routes, hooks), files reached only from components, universal loads and client hooks are client bundle; files reached only from server routes and hooks are server only; files reached from both are shared. $lib/server and *.server.* files are always server only."
-      : "No SvelteKit app was found, so source files share one side. Tests and config have their own sides.",
-    "Areas are groups of files that import each other much more than they import the rest of the project (community detection on the import graph, with a small bonus for files in the same folder). Each area is named after the folder that holds most of its files.",
   );
 
 const renderLegend = () => {
@@ -764,8 +641,6 @@ const renderLegend = () => {
           legendRow(swatch("--edge-strong", "line"), "Uses (outgoing)"),
           legendRow(swatch("--edge-in", "line"), "Used by (incoming)"),
           ...colorRows,
-          placementHelp(),
-          complexityHelp(),
         ]
       : state.tab === "routes"
         ? [
@@ -773,18 +648,7 @@ const renderLegend = () => {
             h("div", {}, "Top: route files · next: their direct imports · cards: everything reached further down."),
             ...colorRows,
           ]
-        : state.tab === "all"
-          ? [
-              legendRow(h("span", { class: "dot diamond" }), "Entry point"),
-              legendRow(swatch("--group-edge", "line"), "Imports between folders (thicker = more)"),
-              legendRow(swatch("--edge-strong", "line"), "Selected file imports it"),
-              legendRow(swatch("--edge-in", "line"), "It imports the selected file"),
-              legendRow(h("span", { class: "dot ring" }), "Part of an import cycle"),
-              ...colorRows,
-              placementHelp(),
-              complexityHelp(),
-            ]
-          : state.tab === "logic"
+        : state.tab === "logic"
             ? [
                 legendRow(h("span", { class: "shape-swatch decision" }), "Decision (if, while, switch)"),
                 legendRow(h("span", { class: "shape-swatch loop" }), "Loop"),
@@ -801,7 +665,6 @@ const renderLegend = () => {
               legendRow(swatch("--edge-in", "line"), "It calls the selected function"),
               h("div", {}, "Fill: function CC"),
               complexitySwatches(1),
-              complexityHelp(),
             ];
   const open = elements.legend.querySelector("details")?.open ?? true;
   elements.legend.replaceChildren(h("details", { open }, h("summary", {}, "Legend"), h("div", { class: "rows" }, ...content)));
@@ -842,13 +705,6 @@ const renderDetails = () => {
     if (item) return set(routeItemPanel(ctx, item, () => selectIn("routes", null)));
     return set(routePanel(ctx, route, view));
   }
-  if (state.tab === "all") {
-    const selected = state.all.selected;
-    if (selected?.startsWith("imports:")) return set(importEdgePanel(ctx, ...splitEdgeId(selected, "imports:")));
-    if (selected?.startsWith("folders:")) return set(folderEdgePanel(ctx, ...splitEdgeId(selected, "folders:")));
-    if (selected?.startsWith("group:")) return set(folderPanel(ctx, selected));
-    return set(selected ? modulePanel(ctx, selected, null) : overviewPanel(ctx));
-  }
   if (state.tab === "logic" && state.logic.data) {
     return set(
       logicPanel(ctx, state.logic.data, state.logic.selected, {
@@ -878,18 +734,12 @@ const renderDetails = () => {
 };
 
 const renderLayoutOptions = () => {
-  const options: [string, string][] =
-    state.tab === "all"
-      ? [
-          ["structure", "Structure layout"],
-          ["force", `Force layout (up to ${forceLayoutLimit} files)`],
-        ]
-      : [
-          ["cose", "Force layout"],
-          ["breadthfirst", "Layered layout"],
-        ];
+  const options: [string, string][] = [
+    ["cose", "Force layout"],
+    ["breadthfirst", "Layered layout"],
+  ];
   elements.layout.replaceChildren(...options.map(([value, label]) => h("option", { value }, label)));
-  elements.layout.value = state.tab === "all" ? state.all.layout : state.functions.layout;
+  elements.layout.value = state.functions.layout;
 };
 
 const updateToolbar = () => {
@@ -904,9 +754,8 @@ const updateToolbar = () => {
   elements.tabControls.forEach((control) => {
     control.hidden = !(control.dataset.tabs ?? "").split(" ").includes(state.tab);
   });
-  const focusable = state.tab === "all" ? state.all : state.functions;
   elements.focus.disabled = currentSelection(state.tab) === null;
-  elements.focus.checked = focusable.focus;
+  elements.focus.checked = state.functions.focus;
   elements.grouping.value = state.map.grouping;
   elements.color.value = state.color;
   elements.rescan.disabled = state.scanning;
@@ -918,9 +767,6 @@ const updateEmptyState = () => {
   if (!state.snapshot) return showEmpty("Loading…");
   if (data().modules.length === 0) return showEmpty(`No .js, .jsx, .ts, .tsx or .svelte files found in ${data().root}.`);
   if (state.tab === "routes" && !state.routes.selected) return showEmpty("Pick a route from the list on the right.");
-  if (state.tab === "all" && state.all.scene && visibleFiles(state.all.scene, state.all.selected).length === 0) {
-    return showEmpty("No import cycles found.");
-  }
   if (state.tab === "functions") {
     const module = state.functions.explored ? index().modules.get(state.functions.explored) : undefined;
     if (module && module.functionIds.length === 0) {
@@ -968,11 +814,7 @@ const setSnapshot = (snapshot: GraphSnapshot) => {
   rebuildTree();
   document.title = `${snapshot.name} · Laqueus`;
   elements.projectName.textContent = snapshot.name;
-  elements.scanInfo.textContent = `Scanned ${new Date(snapshot.scannedAt).toLocaleTimeString()} in ${snapshot.durationMs} ms`;
   renderDiagnostics();
-  graphs.all.clear();
-  state.all.scene = null;
-  state.all.moved = false;
   if (state.map.path && state.map.path.some((id) => !index().modules.has(id))) state.map.path = null;
   if (state.routes.selected && !index().routes.has(state.routes.selected)) state.routes.selected = null;
   if (state.functions.explored && !index().modules.has(state.functions.explored)) {
@@ -993,7 +835,7 @@ const applyHash = () => {
   );
   syncTrayInputs();
   rebuildTree();
-  const tab = (["map", "routes", "all", "functions", "logic"] as const).find((candidate) => candidate === params.get("tab")) ?? "map";
+  const tab = (["map", "routes", "functions", "logic"] as const).find((candidate) => candidate === params.get("tab")) ?? "map";
   const file = params.get("file");
   const logicId = params.get("logic");
   if (tab === "logic" && logicId) {
@@ -1005,8 +847,7 @@ const applyHash = () => {
   else if (tab === "routes") {
     openRoute(params.get("route"));
     if (params.get("item")) selectIn("routes", params.get("item"));
-  } else if (tab === "all") openAllFiles(params.get("sel"));
-  else {
+  } else {
     const path = params.get("path")?.split("|");
     if (path && path.length === 2) openPath(path[0] as string, path[1] as string);
     else openMapNode(params.get("node") ?? "root", params.get("sel"));
@@ -1030,7 +871,6 @@ const rescan = async () => {
     state.applyingHash = true;
     if (state.tab === "map") renderMapGraph();
     if (state.tab === "routes") renderRoutesGraph();
-    if (state.tab === "all") ensureAllGraph();
     if (state.tab === "functions" && state.functions.explored) {
       const explored = state.functions.explored;
       const selected = state.functions.selected;
@@ -1077,15 +917,6 @@ const searchHits = (query: string): SearchHit[] => {
     .routes.filter((route) => routeLabel(route, multipleApps).toLowerCase().includes(needle))
     .slice(0, 4)
     .map((route) => ({ label: routeLabel(route, multipleApps), detail: `Route · ${route.directory}`, run: () => openRoute(route.id) }));
-  const folders = data()
-    .groups.filter((group) => group.directory.toLowerCase().includes(needle))
-    .sort((a, b) => a.directory.length - b.directory.length)
-    .slice(0, 3)
-    .map((group) => ({
-      label: `${folderLabel(group)}/`,
-      detail: `Folder in All files · ${index().lanes.get(group.side)?.label ?? group.side}`,
-      run: () => openAllFiles(group.id),
-    }));
   const functions = data()
     .functions.filter((fn) => fn.name.toLowerCase().includes(needle))
     .sort((a, b) => rank(a.name) - rank(b.name) || b.complexity - a.complexity)
@@ -1095,7 +926,7 @@ const searchHits = (query: string): SearchHit[] => {
       detail: lineRef(fn.location),
       run: () => exploreFunctions(fn.moduleId, fn.id),
     }));
-  return [...files, ...areas, ...routes, ...folders, ...functions];
+  return [...files, ...areas, ...routes, ...functions];
 };
 
 const runHit = (hit: SearchHit) => {
@@ -1110,7 +941,7 @@ const renderSearchResults = () => {
   elements.searchResults.hidden = elements.search.value.trim() === "";
   elements.searchResults.replaceChildren(
     ...(hits.length === 0
-      ? [h("li", { class: "note" }, "No matching files, areas, routes, folders or functions.")]
+      ? [h("li", { class: "note" }, "No matching files, areas, routes or functions.")]
       : hits.map((hit, position) =>
           h(
             "li",
@@ -1136,7 +967,6 @@ const isTyping = (target: EventTarget | null) =>
 const wireToolbar = () => {
   elements.tabs.map.addEventListener("click", () => openMapNode(state.map.node, state.map.selected));
   elements.tabs.routes.addEventListener("click", () => openRoute(state.routes.selected));
-  elements.tabs.all.addEventListener("click", () => openAllFiles(state.all.selected));
   elements.tabs.functions.addEventListener("click", () => {
     if (state.functions.explored) exploreFunctions(state.functions.explored, state.functions.selected);
   });
@@ -1166,24 +996,12 @@ const wireToolbar = () => {
   });
   elements.rescan.addEventListener("click", () => void rescan());
   elements.layout.addEventListener("change", () => {
-    if (state.tab === "all") {
-      state.all.layout = elements.layout.value === "force" ? "force" : "structure";
-      refreshAllGraph(true);
-    } else {
-      state.functions.layout = elements.layout.value === "breadthfirst" ? "breadthfirst" : "cose";
-      const scene = state.functions.scene;
-      if (scene) graphs.functions.relayout(functionCenters(scene, visibleFunctions(scene)));
-    }
-  });
-  elements.cyclesOnly.addEventListener("change", () => {
-    refreshAllGraph(true);
-    updateEmptyState();
+    state.functions.layout = elements.layout.value === "breadthfirst" ? "breadthfirst" : "cose";
+    const scene = state.functions.scene;
+    if (scene) graphs.functions.relayout(functionCenters(scene, visibleFunctions(scene)));
   });
   elements.focus.addEventListener("change", () => {
-    if (state.tab === "all") {
-      state.all.focus = elements.focus.checked;
-      refreshAllGraph(true);
-    } else if (state.tab === "functions") {
+    if (state.tab === "functions") {
       state.functions.focus = elements.focus.checked;
       refreshFunctionGraph(true);
     }

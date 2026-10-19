@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { NodeProps } from "@xyflow/svelte";
   import { getContext } from "svelte";
-  import { type FlowData, type GraphContext, graphContext } from "../scene";
-  import CenterHandles from "./CenterHandles.svelte";
+  import { type FlowData, type GraphContext, graphContext, has, mark } from "../scene";
 
   let { id, data, width, height }: NodeProps & { data: FlowData } = $props();
 
   const graph = getContext<GraphContext>(graphContext);
+  const flags = $derived(graph.mark(id));
 
   const w = $derived(width ?? 0);
   const h = $derived(height ?? 0);
@@ -29,9 +29,9 @@
 <div
   class="flow-node kind-{data.flowKind}"
   class:unreachable={data.unreachable}
-  class:dim={graph.look.dim.has(id)}
-  class:path={graph.look.path.has(id)}
-  class:selected={graph.selected === id}
+  class:dim={has(flags, mark.dim)}
+  class:path={has(flags, mark.path)}
+  class:selected={has(flags, mark.selected)}
   ondblclick={() => graph.open(id)}
   role="presentation"
 >
@@ -43,7 +43,6 @@
     {/if}
   </svg>
   <span class="text">{data.label}</span>
-  <CenterHandles />
 </div>
 
 <style>

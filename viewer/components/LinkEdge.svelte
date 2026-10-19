@@ -1,45 +1,26 @@
 <script lang="ts">
-  import { BaseEdge, type EdgeProps, EdgeLabel } from "@xyflow/svelte";
   import { getContext } from "svelte";
-  import { type GraphContext, type GraphEdge, edgePaint, edgeTone, graphContext, linkGeometry, noShape } from "../scene";
+  import type { Point } from "../layered";
+  import { type EdgeData, type GraphContext, edgePaint, edgeTone, graphContext, linkGeometry, noShape } from "../scene";
+  import EdgeLine from "./EdgeLine.svelte";
 
-  let { id, source, target, sourceX, sourceY, targetX, targetY, data }: EdgeProps<GraphEdge> = $props();
+  type Props = { id: string; source: string; target: string; from: Point; to: Point; data: EdgeData };
+
+  let { id, source, target, from, to, data }: Props = $props();
 
   const graph = getContext<GraphContext>(graphContext);
 
-  const tone = $derived(edgeTone(graph.look, graph.selected, id));
-  const paint = $derived(edgePaint(tone, graph.look, id, data));
+  const flags = $derived(graph.mark(id));
+  const tone = $derived(edgeTone(flags));
+  const paint = $derived(edgePaint(tone, flags, data));
   const geometry = $derived(
     linkGeometry(
-      { x: sourceX, y: sourceY },
-      { x: targetX, y: targetY },
+      from,
+      to,
       { source: graph.shapes.get(source) ?? noShape, target: graph.shapes.get(target) ?? noShape },
-      { width: paint.width, bend: data?.bend ?? 0, loop: source === target },
+      { width: paint.width, bend: data.bend, loop: source === target },
     ),
   );
 </script>
 
-<BaseEdge
-  {id}
-  path={geometry.path}
-  style="stroke: {paint.stroke}; stroke-width: {paint.width}px;{paint.dash ? ` stroke-dasharray: ${paint.dash};` : ''}"
-/>
-<polygon class="arrow" points={geometry.arrow} fill={paint.stroke} />
-{#if data?.label}
-  <EdgeLabel x={geometry.label.x} y={geometry.label.y} class="graph-edge-label" style="color: {paint.label};">
-    {data.label}
-  </EdgeLabel>
-{/if}
-
-<style>
-  .arrow {
-    pointer-events: none;
-  }
-
-  :global(.graph-edge-label) {
-    padding: 0 2px;
-    border-radius: 3px;
-    background: var(--bg);
-    font-size: 11px;
-  }
-</style>
+<EdgeLine {id} path={geometry.path} arrow={geometry.arrow} at={geometry.label} label={data.label} {paint} />

@@ -20,15 +20,13 @@
     return {
       x: x + (node.width ?? node.measured.width ?? 0) / 2,
       y: y + (node.height ?? node.measured.height ?? 0) / 2,
-      container: node.type === "container",
     };
   };
 
   const center = (id: string) => {
     const at = centerOf(id);
     if (!at) return;
-    const zoom = at.container ? flow.getZoom() : Math.max(flow.getZoom(), 1);
-    void flow.setCenter(at.x, at.y, { zoom, duration: 250 });
+    void flow.setCenter(at.x, at.y, { zoom: Math.max(flow.getZoom(), 1), duration: 250 });
   };
 
   /** Large flowcharts start readable at the top instead of shrunk to fit. */

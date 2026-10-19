@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { NodeProps } from "@xyflow/svelte";
   import { getContext } from "svelte";
-  import { type BoxData, type GraphContext, graphContext } from "../scene";
-  import CenterHandles from "./CenterHandles.svelte";
+  import { type BoxData, type GraphContext, graphContext, has, mark } from "../scene";
 
   let { id, data }: NodeProps & { data: BoxData } = $props();
 
   const graph = getContext<GraphContext>(graphContext);
+  const flags = $derived(graph.mark(id));
 
   const fill = $derived(
     graph.color === "complexity" ? `var(--cc-${data.bucket === 0 ? "none" : data.bucket})` : `var(--side-${data.side})`,
@@ -15,8 +15,8 @@
 
 <div
   class="box {data.kind}"
-  class:dim={graph.look.dim.has(id)}
-  class:selected={graph.selected === id}
+  class:dim={has(flags, mark.dim)}
+  class:selected={has(flags, mark.selected)}
   class:cyclic={data.cyclic}
   class:complexity={graph.color === "complexity"}
   style:--fill={fill}
@@ -25,7 +25,6 @@
   role="presentation"
 >
   <span class="text">{data.label}</span>
-  <CenterHandles />
 </div>
 
 <style>
