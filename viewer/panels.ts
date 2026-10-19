@@ -7,13 +7,12 @@ import type {
   LogicNode,
   LogicOutlineItem,
   GraphSnapshot,
-  GroupEdge,
   Location,
   ModuleNode,
   Route,
 } from "../src/model";
 import { type Child, basename, formatCC, groupBy, h, plural } from "./dom";
-import { type Index, externalCounts, folderLabel, fullRef, lineRef, routeLabel } from "./data";
+import { type Index, externalCounts, fullRef, lineRef, routeLabel } from "./data";
 import type { MapItem, MapLink, MapView, RouteView, Tree, TreeNode } from "./map";
 
 export type PanelContext = {
@@ -30,7 +29,6 @@ export type PanelContext = {
     logic: (functionId: string) => void;
     route: (routeId: string | null) => void;
     routeItem: (itemId: string | null) => void;
-    allFilesItem: (id: string) => void;
     path: (from: string, to: string) => void;
     pathPicker: (from: string | null) => void;
   };
@@ -389,75 +387,6 @@ export const modulePanel = (ctx: PanelContext, moduleId: string, back: { label: 
     ),
     ...section("Functions by CC", list(functionRankItems(ctx, functions, false), "No functions in this file.")),
     ...(diagnostics.length === 0 ? [] : section("Warnings", list(diagnosticItems(diagnostics), ""))),
-  ];
-};
-
-export const importEdgePanel = (ctx: PanelContext, from: string, to: string): HTMLElement[] => {
-  const edge = (ctx.index.importsFrom.get(from) ?? []).find((candidate) => candidate.to === to);
-  if (!edge) return [];
-  return [
-    h("h2", {}, "Import"),
-    h("p", {}, moduleLink(ctx, from), h("span", { class: "muted" }, " imports "), moduleLink(ctx, to)),
-    ...section(
-      `Import statements (${edge.occurrences.length})`,
-      list(edge.occurrences.map((location) => h("li", {}, h("span", { class: "mono" }, fullRef(location)), link("Copy", () => ctx.copy(lineRef(location))))), ""),
-    ),
-  ];
-};
-
-const folderEdgeList = (ctx: PanelContext, edges: readonly GroupEdge[], side: "from" | "to", emptyText: string) =>
-  list(
-    [...edges]
-      .sort((a, b) => b.count - a.count)
-      .map((edge) =>
-        h(
-          "li",
-          {},
-          link(folderLabel(ctx.index.groups.get(edge[side])), () => ctx.open.allFilesItem(`folders:${edge.from}->${edge.to}`)),
-          h("span", { class: "aside" }, plural(edge.count, "import")),
-        ),
-      ),
-    emptyText,
-  );
-
-export const folderPanel = (ctx: PanelContext, groupId: string): HTMLElement[] => {
-  const group = ctx.index.groups.get(groupId);
-  if (!group) return [];
-  const files = group.moduleIds.flatMap((id) => ctx.index.modules.get(id) ?? []);
-  return [
-    h("div", { class: "note" }, "Folder"),
-    h("h2", {}, folderLabel(group)),
-    sideBadge(ctx, group.side) ?? h("span", {}),
-    h(
-      "div",
-      { class: "metrics" },
-      metric("Files", files.length),
-      metric("Uses folders", (ctx.index.groupEdgesFrom.get(groupId) ?? []).length),
-      metric("Used by folders", (ctx.index.groupEdgesTo.get(groupId) ?? []).length),
-    ),
-    ...section("Imports from", folderEdgeList(ctx, ctx.index.groupEdgesFrom.get(groupId) ?? [], "to", "Imports nothing from other folders.")),
-    ...section("Imported by", folderEdgeList(ctx, ctx.index.groupEdgesTo.get(groupId) ?? [], "from", "No other folder imports it.")),
-    ...packagesSection(files),
-    ...section("Files", list(fileItems(ctx, group.moduleIds), "")),
-  ];
-};
-
-export const folderEdgePanel = (ctx: PanelContext, from: string, to: string): HTMLElement[] => {
-  const target = new Set(ctx.index.groups.get(to)?.moduleIds ?? []);
-  const imports = (ctx.index.groups.get(from)?.moduleIds ?? []).flatMap((id) => (ctx.index.importsFrom.get(id) ?? []).filter((candidate) => target.has(candidate.to)));
-  return [
-    h("h2", {}, "Folder imports"),
-    h(
-      "p",
-      {},
-      link(folderLabel(ctx.index.groups.get(from)), () => ctx.open.allFilesItem(from)),
-      h("span", { class: "muted" }, " imports "),
-      link(folderLabel(ctx.index.groups.get(to)), () => ctx.open.allFilesItem(to)),
-    ),
-    ...section(
-      `File imports (${imports.length})`,
-      list(imports.map((item) => h("li", {}, h("span", {}, moduleLink(ctx, item.from), h("span", { class: "muted" }, " → "), moduleLink(ctx, item.to)))), ""),
-    ),
   ];
 };
 

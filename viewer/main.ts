@@ -1,32 +1,12 @@
-import type cytoscape from "cytoscape";
 import type { FunctionLogic, GraphSnapshot, Side } from "../src/model";
-import { type Index, buildIndex, folderLabel, lineRef, moduleIdOf, routeLabel, splitEdgeId } from "./data";
+import { type Index, buildIndex, lineRef, moduleIdOf, routeLabel, splitEdgeId } from "./data";
 import { basename, byId, h, plural } from "./dom";
 import { defaultCollapsed, flowPositions, flowView, structuralKinds } from "./flow";
-import {
-  type ColorMode,
-  type FunctionLayout,
-  type ModuleLayout,
-  bucketLabels,
-  createGraph,
-  emphasise,
-  fitVisible,
-  flowElements,
-  highlightPaths,
-  forceLayoutLimit,
-  functionElements,
-  graphStyle,
-  mapElements,
-  mapPositions,
-  moduleElements,
-  restoreStructure,
-  runForceLayout,
-  sidesPositions,
-  sizeStructureLabels,
-  wheelZoom,
-} from "./graph";
-import { mapScene } from "./map-flow";
-import { createMapGraph } from "./map-graph.svelte";
+import { forceLayoutAsync } from "./force-async";
+import { type ColorMode, type FunctionLayout, bucketLabels, mapPositions, sidesPositions } from "./graph";
+import { type Centers, type GraphView, createGraphView } from "./graph-view.svelte";
+import { type Point, layered } from "./layered";
+import { functionsLook, neighbourhoodLook, pathLook } from "./looks";
 import {
   type Grouping,
   type MapView,
@@ -45,11 +25,8 @@ import {
 import {
   type PanelContext,
   callEdgePanel,
-  folderEdgePanel,
-  folderPanel,
   functionPanel,
   functionsOverviewPanel,
-  importEdgePanel,
   linkPanel,
   logicPanel,
   modulePanel,
@@ -60,23 +37,22 @@ import {
   routePanel,
   routesListPanel,
 } from "./panels";
+import type { Scene } from "./scene";
+import { flowScene, functionScene, mapScene } from "./scenes";
 
-type Tab = "map" | "routes" | "all" | "functions" | "logic";
+type Tab = "map" | "routes" | "functions" | "logic";
 type SearchHit = { label: string; detail: string; run: () => void };
 
 const elements = {
   projectName: byId<HTMLElement>("project-name"),
-  scanInfo: byId<HTMLElement>("scan-info"),
   tabs: {
     map: byId<HTMLButtonElement>("tab-map"),
     routes: byId<HTMLButtonElement>("tab-routes"),
-    all: byId<HTMLButtonElement>("tab-all"),
     functions: byId<HTMLButtonElement>("tab-functions"),
   },
   graphs: {
     map: byId<HTMLElement>("map-graph"),
     routes: byId<HTMLElement>("routes-graph"),
-    all: byId<HTMLElement>("modules-graph"),
     functions: byId<HTMLElement>("functions-graph"),
     logic: byId<HTMLElement>("logic-graph"),
   },
@@ -84,7 +60,6 @@ const elements = {
   searchResults: byId<HTMLUListElement>("search-results"),
   grouping: byId<HTMLSelectElement>("grouping"),
   color: byId<HTMLSelectElement>("color"),
-  cyclesOnly: byId<HTMLInputElement>("cycles-only"),
   focus: byId<HTMLInputElement>("focus"),
   layout: byId<HTMLSelectElement>("layout"),
   fit: byId<HTMLButtonElement>("fit"),
@@ -118,13 +93,13 @@ const state = {
     view: null as MapView | null,
   },
   routes: { selected: null as string | null, item: null as string | null, filter: "", view: null as RouteView | null },
-  all: { selected: null as string | null, focus: false, layout: "structure" as ModuleLayout, moved: false },
   functions: {
     explored: null as string | null,
     selected: null as string | null,
     focus: false,
     layout: "cose" as FunctionLayout,
-    positions: null as Map<string, cytoscape.Position> | null,
+    positions: null as Map<string, Point> | null,
+    scene: null as Scene | null,
   },
   logic: {
     functionId: null as string | null,
@@ -132,7 +107,6 @@ const state = {
     selected: null as string | null,
     collapsed: new Set<string>(),
   },
-  cy: { map: null, routes: null, all: null, functions: null, logic: null } as Record<Tab, cytoscape.Core | null>,
   pathPickerFrom: null as string | null,
   scanning: false,
   searchHits: [] as SearchHit[],
@@ -177,7 +151,6 @@ const writeHash = (push: boolean) => {
     if (state.routes.selected) params.set("route", state.routes.selected);
     if (state.routes.item) params.set("item", state.routes.item);
   }
-  if (state.tab === "all" && state.all.selected) params.set("sel", state.all.selected);
   if (state.tab === "functions" && state.functions.explored) {
     params.set("file", state.functions.explored);
     if (state.functions.selected) params.set("fn", state.functions.selected);
@@ -209,7 +182,6 @@ const panelContext = (): PanelContext => ({
     logic: (functionId) => void openLogic(functionId),
     route: (routeId) => openRoute(routeId),
     routeItem: (itemId) => selectIn("routes", itemId),
-    allFilesItem: (id) => openAllFiles(id),
     path: (from, to) => openPath(from, to),
     pathPicker: (from) => {
       state.pathPickerFrom = from;
@@ -224,194 +196,119 @@ const currentSelection = (tab: Tab) =>
     ? state.map.selected
     : tab === "routes"
       ? state.routes.item
-      : tab === "all"
-        ? state.all.selected
-        : tab === "logic"
-          ? state.logic.selected
-          : state.functions.selected;
-
-const syncSelection = (cy: cytoscape.Core, id: string | null) => {
-  const element = id ? cy.getElementById(id) : null;
-  if (!element || element.empty()) cy.elements(":selected").unselect();
-  else if (!element.selected()) {
-    cy.elements(":selected").unselect();
-    element.select();
-  }
-};
+      : tab === "logic"
+        ? state.logic.selected
+        : state.functions.selected;
 
 const containerOf = (tab: Tab) => elements.graphs[tab];
 
-const wireCommonEvents = (cy: cytoscape.Core, tab: Tab) => {
-  cy.on("tap", "node, edge", (event) => selectIn(tab, (event.target as cytoscape.SingularElementArgument).id()));
-  cy.on("tap", (event) => {
-    if (event.target === cy) selectIn(tab, null);
-  });
+const sceneHas = (scene: Scene, id: string) =>
+  scene.nodes.some((node) => node.id === id) || scene.edges.some((edge) => edge.id === id);
+
+const openRouteItem = (id: string) => {
+  const item = state.routes.view?.items.find((candidate) => candidate.id === id);
+  if (item?.kind === "file") exploreFunctions(item.moduleIds[0] as string);
+  else if (item?.target) openMapNode(item.target);
 };
 
-const wireHover = (cy: cytoscape.Core, tab: Tab) => {
-  cy.on("mouseover", "node", (event) => emphasise(cy, (event.target as cytoscape.NodeSingular).id()));
-  cy.on("mouseout", "node", () => emphasise(cy, currentSelection(tab)));
+const toggleStructural = (id: string) => {
+  const owner = id.startsWith("collapsed:") ? id.slice("collapsed:".length) : id;
+  const node = state.logic.data?.nodes.find((candidate) => candidate.id === owner);
+  if (node && structuralKinds.has(node.kind)) toggleLogic(owner);
+};
+
+const graphs: Record<Tab, GraphView> = {
+  map: createGraphView(containerOf("map"), { select: (id) => selectIn("map", id), open: (id) => openItem(id) }),
+  routes: createGraphView(containerOf("routes"), { select: (id) => selectIn("routes", id), open: (id) => openRouteItem(id) }),
+  functions: createGraphView(containerOf("functions"), {
+    select: (id) => selectIn("functions", id),
+    open: (id) => void openLogic(id),
+  }),
+  logic: createGraphView(containerOf("logic"), { select: (id) => selectIn("logic", id), open: (id) => toggleStructural(id) }),
 };
 
 const mapView = (): MapView =>
   state.map.path ? pathView(data(), state.map.path) : buildView(data(), tree(), state.map.node);
-
-const mapGraph = createMapGraph(containerOf("map"), {
-  select: (id) => selectIn("map", id),
-  open: (id) => openItem(id),
-});
 
 const renderMapGraph = (center: string | null = null) => {
   const view = mapView();
   state.map.view = view;
   const positions =
     !state.map.path && state.map.node === "root" ? sidesPositions(view.items, new Set(traySides)) : mapPositions(view, 1);
-  const ids = new Set([...view.items.map((item) => item.id), ...view.links.map((link) => link.id)]);
-  if (state.map.selected && !ids.has(state.map.selected)) state.map.selected = null;
-  mapGraph.show(mapScene(view, positions, center), state.map.selected, state.color);
+  const scene = mapScene(view);
+  if (state.map.selected && !sceneHas(scene, state.map.selected)) state.map.selected = null;
+  graphs.map.show({
+    scene,
+    centers: positions,
+    selected: state.map.selected,
+    color: state.color,
+    look: (focus) => neighbourhoodLook(scene, focus),
+    hover: true,
+    placement: center ? { center } : "fit",
+  });
 };
 
 const renderRoutesGraph = () => {
-  state.cy.routes?.destroy();
-  state.cy.routes = null;
   const route = state.routes.selected ? index().routes.get(state.routes.selected) : undefined;
   if (!route) {
     state.routes.view = null;
+    graphs.routes.clear();
     return;
   }
   const view = buildRouteView(data(), tree(), route);
   state.routes.view = view;
-  const cy = createGraph(containerOf("routes"), mapElements(view, mapPositions(view, 2)), state.color);
-  state.cy.routes = cy;
-  wireCommonEvents(cy, "routes");
-  wireHover(cy, "routes");
-  cy.on("dbltap", "node", (event) => {
-    const item = view.items.find((candidate) => candidate.id === (event.target as cytoscape.NodeSingular).id());
-    if (item?.kind === "file") exploreFunctions(item.moduleIds[0] as string);
-    else if (item?.target) openMapNode(item.target);
+  const scene = mapScene(view);
+  if (state.routes.item && !sceneHas(scene, state.routes.item)) state.routes.item = null;
+  graphs.routes.show({
+    scene,
+    centers: mapPositions(view, 2),
+    selected: state.routes.item,
+    color: state.color,
+    look: (focus) => neighbourhoodLook(scene, focus),
+    hover: true,
+    placement: "fit",
   });
-  if (state.routes.item && cy.getElementById(state.routes.item).empty()) state.routes.item = null;
-  emphasise(cy, state.routes.item);
-  syncSelection(cy, state.routes.item);
-  fitVisible(cy);
 };
 
-const fileNeighbours = (files: cytoscape.NodeCollection) => files.connectedEdges(".file-edge").connectedNodes();
+const functionsFocusMode = (scene: Scene) =>
+  state.functions.focus && state.functions.selected !== null && sceneHas(scene, state.functions.selected);
 
-const allFocusSet = (selected: cytoscape.CollectionReturnValue): cytoscape.NodeCollection => {
-  const id = selected.id();
-  if (id.startsWith("module:")) return selected.nodes().union(fileNeighbours(selected.nodes()));
-  if (id.startsWith("group:")) {
-    const files = selected.nodes().children();
-    return files.union(fileNeighbours(files));
-  }
-  const edge = selected as unknown as cytoscape.EdgeSingular;
-  if (id.startsWith("folders:")) return edge.source().children().union(edge.target().children());
-  return edge.connectedNodes();
+const visibleFunctions = (scene: Scene): Set<string> => {
+  const look = functionsLook(scene, null, state.functions.selected, functionsFocusMode(scene));
+  return new Set(scene.nodes.filter((node) => !look.hidden.has(node.id)).map((node) => node.id));
 };
 
-const highlightAll = (cy: cytoscape.Core, selected: cytoscape.CollectionReturnValue) => {
-  const id = selected.id();
-  const files = cy.nodes(".file");
-  if (id.startsWith("module:")) {
-    const outgoing = selected.outgoers("edge.file-edge");
-    const incoming = selected.incomers("edge.file-edge");
-    outgoing.removeClass("hidden").addClass("outgoing");
-    incoming.removeClass("hidden").addClass("incoming");
-    files.not(selected.union(outgoing.targets()).union(incoming.sources())).addClass("dim");
-    cy.edges(".group-edge").addClass("dim");
-  } else if (id.startsWith("group:")) {
-    const edges = selected.connectedEdges(".group-edge");
-    edges.filter((edge) => edge.source().id() === id).addClass("outgoing");
-    edges.filter((edge) => edge.target().id() === id).addClass("incoming");
-    cy.edges(".group-edge").not(edges).addClass("dim");
-    files.not(selected.children()).addClass("dim");
-  } else {
-    const edge = selected as unknown as cytoscape.EdgeSingular;
-    edge.removeClass("hidden").addClass("outgoing");
-    const ends = id.startsWith("folders:") ? edge.source().children().union(edge.target().children()) : edge.connectedNodes();
-    files.not(ends).addClass("dim");
-    cy.edges(".group-edge").not(edge).addClass("dim");
-  }
-};
-
-const refreshAllGraph = (relayout: boolean) => {
-  const cy = state.cy.all;
-  if (!cy) return;
-  const selectedId = state.all.selected;
-  const selected = selectedId && cy.getElementById(selectedId).nonempty() ? cy.getElementById(selectedId) : null;
-  const focused = state.all.focus && selected !== null;
-  const filtered = elements.cyclesOnly.checked || focused;
-  cy.batch(() => {
-    cy.elements().removeClass("dim outgoing incoming hidden");
-    const visible = focused && selected ? allFocusSet(selected) : elements.cyclesOnly.checked ? cy.nodes(".file[?cyclic]") : cy.nodes(".file");
-    if (filtered) {
-      cy.nodes(".file").not(visible).addClass("hidden");
-      cy.nodes(".group").filter((group) => group.children(".file").not(".hidden").empty()).addClass("hidden");
-      cy.nodes(".lane").filter((lane) => lane.children(".group").not(".hidden").empty()).addClass("hidden");
-      cy.edges(".group-edge").addClass("hidden");
-      cy.edges(".file-edge").filter((edge) => edge.source().hasClass("hidden") || edge.target().hasClass("hidden")).addClass("hidden");
-    } else {
-      cy.edges(".file-edge").addClass("hidden");
-    }
-    if (selected) highlightAll(cy, selected);
-  });
-  syncSelection(cy, selected ? selectedId : null);
-  if (!relayout) return;
-  const visibleCount = cy.nodes(".file").not(".hidden").length;
-  if (state.all.layout === "force" && visibleCount > forceLayoutLimit) {
-    state.all.layout = "structure";
-    toast(`Force layout works on up to ${forceLayoutLimit} files. Use "Cycles only" or "Focus selection" first.`, true);
-    renderLayoutOptions();
-  }
-  if (state.all.layout === "force") {
-    state.all.moved = true;
-    runForceLayout(cy);
-  } else {
-    if (state.all.moved) restoreStructure(cy, data());
-    state.all.moved = false;
-    fitVisible(cy);
-  }
-};
-
-const ensureAllGraph = () => {
-  if (state.cy.all) return;
-  const cy = createGraph(containerOf("all"), moduleElements(data()), state.color);
-  state.cy.all = cy;
-  sizeStructureLabels(cy);
-  wireCommonEvents(cy, "all");
-  cy.on("dbltap", "node.file", (event) => exploreFunctions((event.target as cytoscape.NodeSingular).id()));
-  if (state.all.selected && cy.getElementById(state.all.selected).empty()) state.all.selected = null;
-  refreshAllGraph(elements.cyclesOnly.checked || state.all.focus || state.all.layout === "force");
+const functionCenters = (scene: Scene, visible: ReadonlySet<string>): Centers => {
+  const nodes = scene.nodes.filter((node) => visible.has(node.id));
+  const links = scene.edges
+    .filter((edge) => visible.has(edge.source) && visible.has(edge.target))
+    .map((edge) => ({ from: edge.source, to: edge.target }));
+  return state.functions.layout === "breadthfirst"
+    ? layered(
+        nodes.map((node) => ({ id: node.id, width: 160, height: 44 })),
+        links,
+        { maxPerRow: 8, gapX: 30, gapY: 70 },
+      )
+    : forceLayoutAsync(
+        nodes.map((node) => ({ id: node.id })),
+        links,
+      );
 };
 
 const refreshFunctionGraph = (relayout: boolean) => {
-  const cy = state.cy.functions;
-  if (!cy) return;
+  const scene = state.functions.scene;
+  if (!scene) return;
   const id = state.functions.selected;
-  const selected = id && cy.getElementById(id).nonempty() ? cy.getElementById(id) : null;
-  const asEdge = selected as unknown as cytoscape.EdgeSingular | null;
-  const around = selected
-    ? selected.isNode()
-      ? selected.closedNeighborhood()
-      : (asEdge as cytoscape.EdgeSingular).union((asEdge as cytoscape.EdgeSingular).connectedNodes())
-    : null;
-  const filtered = state.functions.focus && around !== null;
-  cy.batch(() => {
-    cy.elements().removeClass("hidden");
-    if (filtered && around) cy.nodes().not(around.nodes()).addClass("hidden");
-  });
-  emphasise(cy, selected ? id : null);
-  syncSelection(cy, selected ? id : null);
+  const selected = id && sceneHas(scene, id) ? id : null;
+  const focusMode = functionsFocusMode(scene);
+  graphs.functions.update({ selected, look: (focus) => functionsLook(scene, focus, selected, focusMode) });
   if (!relayout) return;
-  if (filtered) {
-    state.functions.positions ??= new Map(cy.nodes().map((node) => [node.id(), { ...node.position() }]));
-    runForceLayout(cy, state.functions.layout === "breadthfirst");
+  if (focusMode) {
+    state.functions.positions ??= graphs.functions.positions();
+    graphs.functions.relayout(functionCenters(scene, visibleFunctions(scene)));
   } else if (state.functions.positions) {
-    const saved = state.functions.positions;
-    cy.nodes().positions((node) => saved.get(node.id()) ?? node.position());
+    graphs.functions.relayout(state.functions.positions);
     state.functions.positions = null;
-    fitVisible(cy);
   }
 };
 
@@ -421,42 +318,18 @@ const showTab = (tab: Tab) => {
   (Object.keys(elements.graphs) as Tab[]).forEach((name) => {
     elements.graphs[name].hidden = name !== tab;
   });
-  if (tab === "all") ensureAllGraph();
-  state.cy[tab]?.resize();
-};
-
-const centerOn = (cy: cytoscape.Core, id: string) => {
-  const element = cy.getElementById(id);
-  if (element.empty() || element.hasClass("hidden")) return;
-  cy.animate(
-    { center: { eles: element }, zoom: Math.max(cy.zoom(), element.isNode() && element.isParent() ? cy.zoom() : 1) },
-    { duration: 250 },
-  );
 };
 
 const selectIn = (tab: Tab, id: string | null) => {
   if (tab === "map") {
     state.map.selected = id;
-    mapGraph.select(id);
+    graphs.map.select(id);
   } else if (tab === "routes") {
     state.routes.item = id;
-    const cy = state.cy.routes;
-    if (cy) {
-      emphasise(cy, id);
-      syncSelection(cy, id);
-    }
+    graphs.routes.select(id);
   } else if (tab === "logic") {
     state.logic.selected = id;
-    const cy = state.cy.logic;
-    if (cy) {
-      highlightPaths(cy, id);
-      syncSelection(cy, id);
-    }
-  } else if (tab === "all") {
-    const refocus = state.all.focus && state.all.selected !== id;
-    state.all.selected = id;
-    if (id === null) state.all.focus = false;
-    refreshAllGraph(refocus);
+    graphs.logic.select(id);
   } else {
     const refocus = state.functions.focus && state.functions.selected !== id;
     state.functions.selected = id;
@@ -498,7 +371,6 @@ const syncTrayInputs = () =>
   });
 
 const revealModule = (moduleId: string) => {
-  if (state.tab === "all") return openAllFiles(moduleId);
   const module = index().modules.get(moduleId);
   if (!module) return;
   if (!tree().pathOf.has(moduleId) && traySides.includes(module.placement.side)) {
@@ -507,21 +379,6 @@ const revealModule = (moduleId: string) => {
     rebuildTree();
   }
   openMapNode(deepestNode(tree(), moduleId) ?? "root", moduleId);
-};
-
-const openAllFiles = (id: string | null) => {
-  showTab("all");
-  const cy = state.cy.all;
-  const hidden = id && cy ? cy.getElementById(id).hasClass("hidden") : false;
-  if (hidden) {
-    elements.cyclesOnly.checked = false;
-    state.all.focus = false;
-  }
-  state.all.selected = id;
-  refreshAllGraph(hidden);
-  if (cy && id) centerOn(cy, id);
-  refresh();
-  writeHash(true);
 };
 
 const openRoute = (routeId: string | null) => {
@@ -554,30 +411,29 @@ const openPath = (from: string, to: string) => {
 const exploreFunctions = (moduleId: string, functionId: string | null = null) => {
   const module = index().modules.get(moduleId);
   if (!module) return;
-  const sameModule = state.functions.explored === moduleId && state.cy.functions !== null;
+  const sameModule = state.functions.explored === moduleId && graphs.functions.mounted;
   showTab("functions");
   state.functions.explored = moduleId;
   if (!sameModule) {
-    state.cy.functions?.destroy();
     state.functions.selected = null;
     state.functions.focus = false;
     state.functions.positions = null;
     const functions = module.functionIds.flatMap((id) => index().functions.get(id) ?? []);
-    const cy = createGraph(
-      containerOf("functions"),
-      functionElements(functions, (id) => index().callsFrom.get(id) ?? []),
-      state.color,
-    );
-    state.cy.functions = cy;
-    wireCommonEvents(cy, "functions");
-    wireHover(cy, "functions");
-    cy.on("dbltap", "node", (event) => void openLogic((event.target as cytoscape.NodeSingular).id()));
-    runForceLayout(cy, state.functions.layout === "breadthfirst");
+    const scene = functionScene(functions, (id) => index().callsFrom.get(id) ?? []);
+    state.functions.scene = scene;
+    graphs.functions.show({
+      scene,
+      centers: functionCenters(scene, new Set(scene.nodes.map((node) => node.id))),
+      selected: null,
+      color: state.color,
+      look: (focus) => functionsLook(scene, focus, null, false),
+      hover: true,
+      placement: "fit",
+    });
   }
   state.functions.selected = functionId ?? (sameModule ? state.functions.selected : null);
   refreshFunctionGraph(false);
-  const cy = state.cy.functions;
-  if (cy && functionId) centerOn(cy, functionId);
+  if (functionId) graphs.functions.center(functionId);
   refresh();
   writeHash(true);
 };
@@ -585,31 +441,20 @@ const exploreFunctions = (moduleId: string, functionId: string | null = null) =>
 const renderLogicGraph = (refit: boolean) => {
   const logic = state.logic.data;
   if (!logic) return;
-  const previous = state.cy.logic;
-  const viewport = previous && !refit ? { zoom: previous.zoom(), pan: { ...previous.pan() } } : null;
-  previous?.destroy();
+  const viewport = !refit && graphs.logic.mounted ? graphs.logic.viewport() : null;
   const view = flowView(logic, state.logic.collapsed);
-  const cy = createGraph(containerOf("logic"), flowElements(view, flowPositions(view)), state.color);
-  state.cy.logic = cy;
-  wireCommonEvents(cy, "logic");
-  cy.on("dbltap", "node", (event) => {
-    const id = (event.target as cytoscape.NodeSingular).id();
-    const owner = id.startsWith("collapsed:") ? id.slice("collapsed:".length) : id;
-    const node = logic.nodes.find((candidate) => candidate.id === owner);
-    if (node && structuralKinds.has(node.kind)) toggleLogic(owner);
+  const scene = flowScene(view);
+  if (state.logic.selected && !sceneHas(scene, state.logic.selected)) state.logic.selected = null;
+  const start = view.items.find((item) => item.kind === "start");
+  graphs.logic.show({
+    scene,
+    centers: flowPositions(view),
+    selected: state.logic.selected,
+    color: state.color,
+    look: (focus) => pathLook(scene, focus),
+    hover: false,
+    placement: viewport ? { viewport } : start ? { top: start.id } : "fit",
   });
-  if (state.logic.selected && cy.getElementById(state.logic.selected).empty()) state.logic.selected = null;
-  highlightPaths(cy, state.logic.selected);
-  syncSelection(cy, state.logic.selected);
-  if (viewport) cy.viewport(viewport);
-  else {
-    fitVisible(cy);
-    if (cy.zoom() < 0.55) {
-      cy.zoom(0.9);
-      cy.center(cy.nodes(".flow-start"));
-      cy.panBy({ x: 0, y: -(cy.height() / 2 - 60) });
-    }
-  }
 };
 
 const toggleLogic = (id: string) => {
@@ -655,9 +500,8 @@ const goUp = () => {
     return;
   }
   if (state.tab === "functions") {
-    if (state.previousTab === "map") openMapNode(state.map.node, state.map.selected);
-    else if (state.previousTab === "routes") openRoute(state.routes.selected);
-    else openAllFiles(state.functions.explored);
+    if (state.previousTab === "routes") openRoute(state.routes.selected);
+    else openMapNode(state.map.node, state.map.selected);
     return;
   }
   if (state.tab === "routes") {
@@ -712,11 +556,9 @@ const renderCrumbs = () => {
         ),
         h("span", { class: "muted" }, ` · ${count}`),
       ),
-      hintLine(
-        mode === "cards"
-          ? "Double-click a card (or select it and press Enter) to open it · Backspace goes up · Hover to see what it uses"
-          : "Double-click a file to see its functions · Dashed cards are outside this view · Backspace goes up",
-      ),
+      ...(mode === "cards"
+        ? [hintLine("Double-click a card (or select it and press Enter) to open it · Backspace goes up · Hover to see what it uses")]
+        : []),
     );
     return;
   }
@@ -735,13 +577,6 @@ const renderCrumbs = () => {
           ? "Left: client side · Right: server side · Top: route files · Cards: everything reached further down"
           : "Pick a route from the list on the right.",
       ),
-    );
-    return;
-  }
-  if (state.tab === "all") {
-    elements.crumbs.replaceChildren(
-      h("div", {}, crumb("All files", null)),
-      hintLine("Every file at once, by side and folder. Select a file to see its own imports."),
     );
     return;
   }
@@ -786,27 +621,8 @@ const sideSwatches = () =>
     "div",
     { class: "swatches" },
     ...data()
-      .lanes.filter((lane) => !traySides.includes(lane.side) || state.map.tray.has(lane.side) || state.tab === "all")
+      .lanes.filter((lane) => !traySides.includes(lane.side) || state.map.tray.has(lane.side))
       .map((lane) => h("span", { class: "swatch" }, swatch(`--side-${lane.side}`), lane.label)),
-  );
-
-const helpDetails = (title: string, ...paragraphs: string[]) =>
-  h("details", {}, h("summary", {}, title), ...paragraphs.map((text) => h("p", {}, text)));
-
-const complexityHelp = () =>
-  helpDetails(
-    "How CC is counted",
-    "Classic cyclomatic complexity, like ESLint's complexity rule. Each function starts at 1 and gets +1 for every if, for, for…in, for…of, while, do…while, catch, ?:, non-default case, &&, ||, ??, logical assignment, default value and optional chain (?.).",
-    "Nested functions are scored on their own. Top-level module code and Svelte markup are not measured. A high score means a function is worth reading closely, not that it is wrong.",
-  );
-
-const placementHelp = () =>
-  helpDetails(
-    "How sides and areas are found",
-    data().framework === "sveltekit"
-      ? "Sides follow SvelteKit's rules: starting from the files SvelteKit loads itself (routes, hooks), files reached only from components, universal loads and client hooks are client bundle; files reached only from server routes and hooks are server only; files reached from both are shared. $lib/server and *.server.* files are always server only."
-      : "No SvelteKit app was found, so source files share one side. Tests and config have their own sides.",
-    "Areas are groups of files that import each other much more than they import the rest of the project (community detection on the import graph, with a small bonus for files in the same folder). Each area is named after the folder that holds most of its files.",
   );
 
 const renderLegend = () => {
@@ -825,8 +641,6 @@ const renderLegend = () => {
           legendRow(swatch("--edge-strong", "line"), "Uses (outgoing)"),
           legendRow(swatch("--edge-in", "line"), "Used by (incoming)"),
           ...colorRows,
-          placementHelp(),
-          complexityHelp(),
         ]
       : state.tab === "routes"
         ? [
@@ -834,18 +648,7 @@ const renderLegend = () => {
             h("div", {}, "Top: route files · next: their direct imports · cards: everything reached further down."),
             ...colorRows,
           ]
-        : state.tab === "all"
-          ? [
-              legendRow(h("span", { class: "dot diamond" }), "Entry point"),
-              legendRow(swatch("--group-edge", "line"), "Imports between folders (thicker = more)"),
-              legendRow(swatch("--edge-strong", "line"), "Selected file imports it"),
-              legendRow(swatch("--edge-in", "line"), "It imports the selected file"),
-              legendRow(h("span", { class: "dot ring" }), "Part of an import cycle"),
-              ...colorRows,
-              placementHelp(),
-              complexityHelp(),
-            ]
-          : state.tab === "logic"
+        : state.tab === "logic"
             ? [
                 legendRow(h("span", { class: "shape-swatch decision" }), "Decision (if, while, switch)"),
                 legendRow(h("span", { class: "shape-swatch loop" }), "Loop"),
@@ -862,7 +665,6 @@ const renderLegend = () => {
               legendRow(swatch("--edge-in", "line"), "It calls the selected function"),
               h("div", {}, "Fill: function CC"),
               complexitySwatches(1),
-              complexityHelp(),
             ];
   const open = elements.legend.querySelector("details")?.open ?? true;
   elements.legend.replaceChildren(h("details", { open }, h("summary", {}, "Legend"), h("div", { class: "rows" }, ...content)));
@@ -903,13 +705,6 @@ const renderDetails = () => {
     if (item) return set(routeItemPanel(ctx, item, () => selectIn("routes", null)));
     return set(routePanel(ctx, route, view));
   }
-  if (state.tab === "all") {
-    const selected = state.all.selected;
-    if (selected?.startsWith("imports:")) return set(importEdgePanel(ctx, ...splitEdgeId(selected, "imports:")));
-    if (selected?.startsWith("folders:")) return set(folderEdgePanel(ctx, ...splitEdgeId(selected, "folders:")));
-    if (selected?.startsWith("group:")) return set(folderPanel(ctx, selected));
-    return set(selected ? modulePanel(ctx, selected, null) : overviewPanel(ctx));
-  }
   if (state.tab === "logic" && state.logic.data) {
     return set(
       logicPanel(ctx, state.logic.data, state.logic.selected, {
@@ -939,18 +734,12 @@ const renderDetails = () => {
 };
 
 const renderLayoutOptions = () => {
-  const options: [string, string][] =
-    state.tab === "all"
-      ? [
-          ["structure", "Structure layout"],
-          ["force", `Force layout (up to ${forceLayoutLimit} files)`],
-        ]
-      : [
-          ["cose", "Force layout"],
-          ["breadthfirst", "Layered layout"],
-        ];
+  const options: [string, string][] = [
+    ["cose", "Force layout"],
+    ["breadthfirst", "Layered layout"],
+  ];
   elements.layout.replaceChildren(...options.map(([value, label]) => h("option", { value }, label)));
-  elements.layout.value = state.tab === "all" ? state.all.layout : state.functions.layout;
+  elements.layout.value = state.functions.layout;
 };
 
 const updateToolbar = () => {
@@ -965,9 +754,8 @@ const updateToolbar = () => {
   elements.tabControls.forEach((control) => {
     control.hidden = !(control.dataset.tabs ?? "").split(" ").includes(state.tab);
   });
-  const focusable = state.tab === "all" ? state.all : state.functions;
   elements.focus.disabled = currentSelection(state.tab) === null;
-  elements.focus.checked = focusable.focus;
+  elements.focus.checked = state.functions.focus;
   elements.grouping.value = state.map.grouping;
   elements.color.value = state.color;
   elements.rescan.disabled = state.scanning;
@@ -979,9 +767,6 @@ const updateEmptyState = () => {
   if (!state.snapshot) return showEmpty("Loading…");
   if (data().modules.length === 0) return showEmpty(`No .js, .jsx, .ts, .tsx or .svelte files found in ${data().root}.`);
   if (state.tab === "routes" && !state.routes.selected) return showEmpty("Pick a route from the list on the right.");
-  if (state.tab === "all" && state.cy.all && state.cy.all.nodes(".file").not(".hidden").empty()) {
-    return showEmpty("No import cycles found.");
-  }
   if (state.tab === "functions") {
     const module = state.functions.explored ? index().modules.get(state.functions.explored) : undefined;
     if (module && module.functionIds.length === 0) {
@@ -1029,17 +814,13 @@ const setSnapshot = (snapshot: GraphSnapshot) => {
   rebuildTree();
   document.title = `${snapshot.name} · Laqueus`;
   elements.projectName.textContent = snapshot.name;
-  elements.scanInfo.textContent = `Scanned ${new Date(snapshot.scannedAt).toLocaleTimeString()} in ${snapshot.durationMs} ms`;
   renderDiagnostics();
-  state.cy.all?.destroy();
-  state.cy.all = null;
-  state.all.moved = false;
   if (state.map.path && state.map.path.some((id) => !index().modules.has(id))) state.map.path = null;
   if (state.routes.selected && !index().routes.has(state.routes.selected)) state.routes.selected = null;
   if (state.functions.explored && !index().modules.has(state.functions.explored)) {
     state.functions.explored = null;
-    state.cy.functions?.destroy();
-    state.cy.functions = null;
+    graphs.functions.clear();
+    state.functions.scene = null;
     if (state.tab === "functions") state.tab = state.previousTab;
   }
 };
@@ -1054,7 +835,7 @@ const applyHash = () => {
   );
   syncTrayInputs();
   rebuildTree();
-  const tab = (["map", "routes", "all", "functions", "logic"] as const).find((candidate) => candidate === params.get("tab")) ?? "map";
+  const tab = (["map", "routes", "functions", "logic"] as const).find((candidate) => candidate === params.get("tab")) ?? "map";
   const file = params.get("file");
   const logicId = params.get("logic");
   if (tab === "logic" && logicId) {
@@ -1066,8 +847,7 @@ const applyHash = () => {
   else if (tab === "routes") {
     openRoute(params.get("route"));
     if (params.get("item")) selectIn("routes", params.get("item"));
-  } else if (tab === "all") openAllFiles(params.get("sel"));
-  else {
+  } else {
     const path = params.get("path")?.split("|");
     if (path && path.length === 2) openPath(path[0] as string, path[1] as string);
     else openMapNode(params.get("node") ?? "root", params.get("sel"));
@@ -1091,12 +871,10 @@ const rescan = async () => {
     state.applyingHash = true;
     if (state.tab === "map") renderMapGraph();
     if (state.tab === "routes") renderRoutesGraph();
-    if (state.tab === "all") ensureAllGraph();
     if (state.tab === "functions" && state.functions.explored) {
       const explored = state.functions.explored;
       const selected = state.functions.selected;
-      state.cy.functions?.destroy();
-      state.cy.functions = null;
+      graphs.functions.clear();
       exploreFunctions(explored, selected && index().functions.has(selected) ? selected : null);
     }
     state.applyingHash = false;
@@ -1139,15 +917,6 @@ const searchHits = (query: string): SearchHit[] => {
     .routes.filter((route) => routeLabel(route, multipleApps).toLowerCase().includes(needle))
     .slice(0, 4)
     .map((route) => ({ label: routeLabel(route, multipleApps), detail: `Route · ${route.directory}`, run: () => openRoute(route.id) }));
-  const folders = data()
-    .groups.filter((group) => group.directory.toLowerCase().includes(needle))
-    .sort((a, b) => a.directory.length - b.directory.length)
-    .slice(0, 3)
-    .map((group) => ({
-      label: `${folderLabel(group)}/`,
-      detail: `Folder in All files · ${index().lanes.get(group.side)?.label ?? group.side}`,
-      run: () => openAllFiles(group.id),
-    }));
   const functions = data()
     .functions.filter((fn) => fn.name.toLowerCase().includes(needle))
     .sort((a, b) => rank(a.name) - rank(b.name) || b.complexity - a.complexity)
@@ -1157,7 +926,7 @@ const searchHits = (query: string): SearchHit[] => {
       detail: lineRef(fn.location),
       run: () => exploreFunctions(fn.moduleId, fn.id),
     }));
-  return [...files, ...areas, ...routes, ...folders, ...functions];
+  return [...files, ...areas, ...routes, ...functions];
 };
 
 const runHit = (hit: SearchHit) => {
@@ -1172,7 +941,7 @@ const renderSearchResults = () => {
   elements.searchResults.hidden = elements.search.value.trim() === "";
   elements.searchResults.replaceChildren(
     ...(hits.length === 0
-      ? [h("li", { class: "note" }, "No matching files, areas, routes, folders or functions.")]
+      ? [h("li", { class: "note" }, "No matching files, areas, routes or functions.")]
       : hits.map((hit, position) =>
           h(
             "li",
@@ -1196,10 +965,8 @@ const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement;
 
 const wireToolbar = () => {
-  (Object.keys(elements.graphs) as Tab[]).forEach((tab) => wheelZoom(elements.graphs[tab], () => state.cy[tab]));
   elements.tabs.map.addEventListener("click", () => openMapNode(state.map.node, state.map.selected));
   elements.tabs.routes.addEventListener("click", () => openRoute(state.routes.selected));
-  elements.tabs.all.addEventListener("click", () => openAllFiles(state.all.selected));
   elements.tabs.functions.addEventListener("click", () => {
     if (state.functions.explored) exploreFunctions(state.functions.explored, state.functions.selected);
   });
@@ -1211,8 +978,7 @@ const wireToolbar = () => {
   });
   elements.color.addEventListener("change", () => {
     state.color = elements.color.value === "complexity" ? "complexity" : "side";
-    Object.values(state.cy).forEach((cy) => cy?.style(graphStyle(state.color)));
-    mapGraph.setColor(state.color);
+    Object.values(graphs).forEach((graph) => graph.setColor(state.color));
     refresh();
     writeHash(false);
   });
@@ -1226,30 +992,16 @@ const wireToolbar = () => {
     }),
   );
   elements.fit.addEventListener("click", () => {
-    const cy = state.cy[state.tab];
-    if (cy) fitVisible(cy);
-    else if (state.tab === "map") mapGraph.fit();
+    graphs[state.tab].fit();
   });
   elements.rescan.addEventListener("click", () => void rescan());
   elements.layout.addEventListener("change", () => {
-    if (state.tab === "all") {
-      state.all.layout = elements.layout.value === "force" ? "force" : "structure";
-      refreshAllGraph(true);
-    } else {
-      state.functions.layout = elements.layout.value === "breadthfirst" ? "breadthfirst" : "cose";
-      const cy = state.cy.functions;
-      if (cy) runForceLayout(cy, state.functions.layout === "breadthfirst");
-    }
-  });
-  elements.cyclesOnly.addEventListener("change", () => {
-    refreshAllGraph(true);
-    updateEmptyState();
+    state.functions.layout = elements.layout.value === "breadthfirst" ? "breadthfirst" : "cose";
+    const scene = state.functions.scene;
+    if (scene) graphs.functions.relayout(functionCenters(scene, visibleFunctions(scene)));
   });
   elements.focus.addEventListener("change", () => {
-    if (state.tab === "all") {
-      state.all.focus = elements.focus.checked;
-      refreshAllGraph(true);
-    } else if (state.tab === "functions") {
+    if (state.tab === "functions") {
       state.functions.focus = elements.focus.checked;
       refreshFunctionGraph(true);
     }
@@ -1258,7 +1010,6 @@ const wireToolbar = () => {
   elements.warnings.addEventListener("click", () => {
     elements.diagnostics.hidden = !elements.diagnostics.hidden;
     elements.warnings.setAttribute("aria-expanded", String(!elements.diagnostics.hidden));
-    state.cy[state.tab]?.resize();
   });
   elements.closeDiagnostics.addEventListener("click", () => {
     elements.diagnostics.hidden = true;
@@ -1305,9 +1056,6 @@ const wireToolbar = () => {
   window.addEventListener("popstate", () => {
     if (state.snapshot) applyHash();
   });
-  window
-    .matchMedia("(prefers-color-scheme: dark)")
-    .addEventListener("change", () => Object.values(state.cy).forEach((cy) => cy?.style(graphStyle(state.color))));
 };
 
 const start = async () => {
