@@ -2,20 +2,20 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as tsParser from "@typescript-eslint/parser";
+import type { ScopeManager } from "@typescript-eslint/scope-manager";
+import type { TSESTree } from "@typescript-eslint/types";
 import ignore, { type Ignore } from "ignore";
 import * as svelteParser from "svelte-eslint-parser";
 import {
-  type AstNode,
+  type FunctionLike,
   type VisitorKeys,
-  descendants,
-  field,
+  allNodes,
   isFunction,
   locationOf,
   outerOfWrappers,
   parentMap,
-  stringField,
 } from "./ast";
-import { type ScopeManagerLike, resolveLocalCalls } from "./calls";
+import { resolveLocalCalls } from "./calls";
 import { detectAreas } from "./areas";
 import { buildLogic } from "./logic";
 import { cyclomaticComplexity, moduleMetrics } from "./metrics";
@@ -28,7 +28,9 @@ import {
   type GraphSnapshot,
   type Location,
   type Result,
+  type Side,
   err,
+  errorMessage,
   functionId,
   moduleId,
   ok,
@@ -60,10 +62,13 @@ type IgnoreRule = { base: string; matcher: Ignore };
 export type ParsedFile = {
   path: string;
   absolute: string;
-  roots: AstNode[];
+  /** Top-level statements: the whole program, or the contents of every Svelte script element. */
+  roots: TSESTree.ProgramStatement[];
   keys: VisitorKeys;
-  scope: ScopeManagerLike;
+  scope: ScopeManager;
 };
+
+type Parsed = Pick<ParsedFile, "roots" | "keys" | "scope">;
 
 type ImportReference = { specifier: string; location: Location };
 
@@ -77,8 +82,7 @@ type FileAnalysis = {
 const toPosix = (value: string) => value.split(path.sep).join("/");
 
 const isSourceFile = (name: string) =>
-  sourceExtensions.has(path.extname(name)) &&
-  !excludedFileSuffixes.some((suffix) => name.endsWith(suffix));
+  sourceExtensions.has(path.extname(name)) && !excludedFileSuffixes.some((suffix) => name.endsWith(suffix));
 
 const gitignoreRules = async (dir: string): Promise<IgnoreRule[]> =>
   readFile(path.join(dir, ".gitignore"), "utf8").then(
@@ -98,68 +102,65 @@ const walk = async (dir: string, inherited: readonly IgnoreRule[]): Promise<stri
   const nested = await Promise.all(
     entries.map(async (entry): Promise<string[]> => {
       const absolute = path.join(dir, entry.name);
+
       if (entry.isDirectory()) {
-        return excludedDirectories.has(entry.name) || isIgnored(rules, absolute, true)
-          ? []
-          : walk(absolute, rules);
+        return excludedDirectories.has(entry.name) || isIgnored(rules, absolute, true) ? [] : walk(absolute, rules);
       }
-      return entry.isFile() && isSourceFile(entry.name) && !isIgnored(rules, absolute, false)
-        ? [absolute]
-        : [];
+
+      return entry.isFile() && isSourceFile(entry.name) && !isIgnored(rules, absolute, false) ? [absolute] : [];
     }),
   );
+
   return nested.flat();
 };
 
-export const discoverSourceFiles = async (root: string): Promise<string[]> =>
-  (await walk(root, [])).sort();
+export const discoverSourceFiles = async (root: string): Promise<string[]> => (await walk(root, [])).toSorted();
 
-type ParserOutput = { ast: unknown; scopeManager: unknown; visitorKeys: unknown };
+const read = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
 
 const errorLine = (error: unknown): number | undefined => {
-  const candidate = error as { lineNumber?: unknown; line?: unknown; loc?: { line?: unknown } };
-  const line = candidate.lineNumber ?? candidate.line ?? candidate.loc?.line;
+  const line = read(error, "lineNumber") ?? read(error, "line") ?? read(read(error, "loc"), "line");
   return typeof line === "number" ? line : undefined;
 };
 
-const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+const parseScript = (absolute: string, code: string): Parsed => {
+  const output = tsParser.parseForESLint(code, {
+    filePath: absolute,
+    loc: true,
+    range: true,
+    sourceType: "module",
+    ecmaVersion: "latest",
+    ecmaFeatures: { jsx: !absolute.endsWith(".ts") },
+  });
 
-const parseWithParser = (absolute: string, code: string): ParserOutput =>
-  absolute.endsWith(".svelte")
-    ? (svelteParser.parseForESLint(code, {
-        parser: tsParser,
-        filePath: absolute,
-        ecmaVersion: "latest",
-        sourceType: "module",
-      }) as unknown as ParserOutput)
-    : (tsParser.parseForESLint(code, {
-        filePath: absolute,
-        loc: true,
-        range: true,
-        sourceType: "module",
-        ecmaVersion: "latest",
-        ecmaFeatures: { jsx: !absolute.endsWith(".ts") },
-      }) as unknown as ParserOutput);
+  return { roots: output.ast.body, keys: output.visitorKeys, scope: output.scopeManager };
+};
 
-export const parseSource = (
-  root: string,
-  absolute: string,
-  code: string,
-): Result<ParsedFile, Diagnostic> => {
+const parseSvelte = (absolute: string, code: string): Parsed => {
+  const output = svelteParser.parseForESLint(code, {
+    parser: tsParser,
+    filePath: absolute,
+    ecmaVersion: "latest",
+    sourceType: "module",
+  });
+  const scripts = output.ast.body.flatMap((node) => (node.type === "SvelteScriptElement" ? node.body : []));
+
+  // svelte-eslint-parser declares plain ESTree and ESLint scope types, but with `parser: tsParser`
+  // the script contents and their scope come from typescript-eslint.
+  return {
+    roots: scripts as unknown as TSESTree.ProgramStatement[],
+    keys: output.visitorKeys,
+    scope: output.scopeManager as unknown as ScopeManager,
+  };
+};
+
+export const parseSource = (root: string, absolute: string, code: string): Result<ParsedFile, Diagnostic> => {
   const relative = toPosix(path.relative(root, absolute));
+
   try {
-    const output = parseWithParser(absolute, code);
-    const program = output.ast as AstNode;
-    const body = (program.body as AstNode[] | undefined) ?? [];
-    return ok({
-      path: relative,
-      absolute,
-      roots: absolute.endsWith(".svelte")
-        ? body.filter((node) => node.type === "SvelteScriptElement")
-        : [program],
-      keys: output.visitorKeys as VisitorKeys,
-      scope: output.scopeManager as ScopeManagerLike,
-    });
+    const parsed = absolute.endsWith(".svelte") ? parseSvelte(absolute, code) : parseScript(absolute, code);
+    return ok({ path: relative, absolute, ...parsed });
   } catch (error) {
     return err({
       file: relative,
@@ -170,130 +171,127 @@ export const parseSource = (
   }
 };
 
-const literalString = (node: AstNode | undefined): string | undefined => {
+const literalString = (node: TSESTree.Node | null | undefined): string | undefined => {
   if (node?.type === "Literal") return typeof node.value === "string" ? node.value : undefined;
-  if (node?.type === "TemplateLiteral" && (node.expressions as unknown[]).length === 0) {
-    const quasi = (node.quasis as AstNode[])[0];
-    const cooked = (quasi?.value as { cooked?: unknown } | undefined)?.cooked;
-    return typeof cooked === "string" ? cooked : undefined;
-  }
+  if (node?.type === "TemplateLiteral" && node.expressions.length === 0)
+    return node.quasis[0]?.value.cooked ?? undefined;
+
   return undefined;
 };
 
-const specifiersAreTypeOnly = (node: AstNode, kindKey: "importKind" | "exportKind") => {
-  const specifiers = (node.specifiers as AstNode[] | undefined) ?? [];
-  return specifiers.length > 0 && specifiers.every((specifier) => specifier[kindKey] === "type");
-};
-
-const importSpecifier = (node: AstNode): string | undefined => {
+const importSpecifier = (node: TSESTree.Node): string | undefined => {
   switch (node.type) {
-    case "ImportDeclaration":
-      return node.importKind === "type" || specifiersAreTypeOnly(node, "importKind")
-        ? undefined
-        : literalString(field(node, "source"));
-    case "ExportNamedDeclaration":
-      return node.exportKind === "type" || specifiersAreTypeOnly(node, "exportKind")
-        ? undefined
-        : literalString(field(node, "source"));
+    case "ImportDeclaration": {
+      const typeOnly =
+        node.specifiers.length > 0 &&
+        node.specifiers.every((specifier) => specifier.type === "ImportSpecifier" && specifier.importKind === "type");
+      return node.importKind === "type" || typeOnly ? undefined : literalString(node.source);
+    }
+    case "ExportNamedDeclaration": {
+      const typeOnly =
+        node.specifiers.length > 0 && node.specifiers.every((specifier) => specifier.exportKind === "type");
+      return node.exportKind === "type" || typeOnly ? undefined : literalString(node.source);
+    }
     case "ExportAllDeclaration":
-      return node.exportKind === "type" ? undefined : literalString(field(node, "source"));
+      return node.exportKind === "type" ? undefined : literalString(node.source);
     case "ImportExpression":
-      return literalString(field(node, "source"));
-    case "CallExpression": {
-      const callee = field(node, "callee");
-      const args = (node.arguments as AstNode[] | undefined) ?? [];
-      return callee?.type === "Identifier" && callee.name === "require" && args.length === 1
-        ? literalString(args[0])
+      return literalString(node.source);
+    case "CallExpression":
+      return node.callee.type === "Identifier" && node.callee.name === "require" && node.arguments.length === 1
+        ? literalString(node.arguments[0])
         : undefined;
-    }
-    case "TSImportEqualsDeclaration": {
-      const reference = field(node, "moduleReference");
-      return node.importKind !== "type" && reference?.type === "TSExternalModuleReference"
-        ? literalString(field(reference, "expression"))
+    case "TSImportEqualsDeclaration":
+      return node.importKind !== "type" && node.moduleReference.type === "TSExternalModuleReference"
+        ? literalString(node.moduleReference.expression)
         : undefined;
-    }
     default:
       return undefined;
   }
 };
 
-export const extractImports = (file: ParsedFile, nodes: readonly AstNode[]): ImportReference[] =>
+export const extractImports = (file: ParsedFile, nodes: readonly TSESTree.Node[]): ImportReference[] =>
   nodes.flatMap((node) => {
     const specifier = importSpecifier(node);
     return specifier === undefined ? [] : [{ specifier, location: locationOf(node, file.path) }];
   });
 
-const keyName = (member: AstNode): string => {
-  const key = field(member, "key");
-  if (member.computed === true) {
-    const literal = key?.type === "Literal" ? String(key.value) : undefined;
-    return literal === undefined ? "[computed]" : `[${JSON.stringify(literal)}]`;
-  }
-  if (key?.type === "Identifier") return stringField(key, "name") ?? "<key>";
-  if (key?.type === "PrivateIdentifier") return `#${stringField(key, "name")}`;
-  if (key?.type === "Literal") return String(key.value);
+type Member = TSESTree.MethodDefinition | TSESTree.PropertyDefinition | TSESTree.AccessorProperty | TSESTree.Property;
+
+const keyName = (member: Member): string => {
+  const key = member.key;
+
+  if (member.computed) return key.type === "Literal" ? `[${JSON.stringify(String(key.value))}]` : "[computed]";
+  if (key.type === "Identifier") return key.name;
+  if (key.type === "PrivateIdentifier") return `#${key.name}`;
+  if (key.type === "Literal") return String(key.value);
+
   return "<key>";
 };
 
-const memberPath = (node: AstNode | undefined): string | undefined => {
-  if (node?.type === "Identifier") return stringField(node, "name");
+const memberPath = (node: TSESTree.Node | null | undefined): string | undefined => {
+  if (node?.type === "Identifier") return node.name;
   if (node?.type === "ThisExpression") return "this";
-  if (node?.type === "MemberExpression" && node.computed !== true) {
-    const object = memberPath(field(node, "object"));
-    const propertyNode = field(node, "property");
-    const property = propertyNode && stringField(propertyNode, "name");
-    return object && property ? `${object}.${property}` : undefined;
+
+  if (node?.type === "MemberExpression" && !node.computed) {
+    const object = memberPath(node.object);
+    return object && `${object}.${node.property.name}`;
   }
+
   return undefined;
 };
 
-const bindingName = (holder: AstNode, parents: ReadonlyMap<AstNode, AstNode>) => {
+type Parents = ReadonlyMap<TSESTree.Node, TSESTree.Node>;
+
+const bindingName = (holder: TSESTree.Node, parents: Parents) => {
   const parent = parents.get(holder);
-  if (parent?.type === "VariableDeclarator" && field(parent, "init") === holder) {
-    return memberPath(field(parent, "id"));
-  }
-  if (parent?.type === "AssignmentExpression" && field(parent, "right") === holder) {
-    return memberPath(field(parent, "left"));
-  }
+
+  if (parent?.type === "VariableDeclarator" && parent.init === holder) return memberPath(parent.id);
+  if (parent?.type === "AssignmentExpression" && parent.right === holder) return memberPath(parent.left);
+
   return undefined;
 };
 
-const className = (cls: AstNode | undefined, parents: ReadonlyMap<AstNode, AstNode>) =>
-  (cls && memberPath(field(cls, "id"))) ??
-  (cls && bindingName(outerOfWrappers(cls, parents), parents)) ??
-  "<anonymous class>";
+const className = (member: TSESTree.Node, parents: Parents) => {
+  const body = parents.get(member);
+  const cls = body && parents.get(body);
+  const ownName = cls?.type === "ClassDeclaration" || cls?.type === "ClassExpression" ? memberPath(cls.id) : undefined;
 
-const accessorSuffix = (member: AstNode) =>
-  member.kind === "get" ? " [get]" : member.kind === "set" ? " [set]" : "";
+  return ownName ?? (cls && bindingName(outerOfWrappers(cls, parents), parents)) ?? "<anonymous class>";
+};
 
-export const functionName = (fn: AstNode, parents: ReadonlyMap<AstNode, AstNode>): string => {
-  const ownName = memberPath(field(fn, "id"));
-  const anonymous = `<anonymous>@${fn.loc?.start.line ?? 0}`;
+const accessorSuffix = (member: Member) =>
+  "kind" in member && member.kind === "get" ? " [get]" : "kind" in member && member.kind === "set" ? " [set]" : "";
+
+export const functionName = (fn: FunctionLike, parents: Parents): string => {
+  const ownName = memberPath(fn.id);
+  const anonymous = `<anonymous>@${fn.loc.start.line}`;
+
   if (fn.type === "FunctionDeclaration") return ownName ?? "default";
+
   const holder = outerOfWrappers(fn, parents);
   const parent = parents.get(holder);
+
   if (!parent) return ownName ?? anonymous;
+
   switch (parent.type) {
     case "MethodDefinition":
     case "PropertyDefinition":
-    case "AccessorProperty": {
-      const cls = parents.get(parents.get(parent) as AstNode);
-      return `${className(cls, parents)}.${keyName(parent)}${accessorSuffix(parent)}`;
-    }
+    case "AccessorProperty":
+      return `${className(parent, parents)}.${keyName(parent)}${accessorSuffix(parent)}`;
     case "Property": {
-      if (field(parent, "value") !== holder) return ownName ?? anonymous;
+      if (parent.value !== holder) return ownName ?? anonymous;
+
       const object = parents.get(parent);
       const owner = object && bindingName(outerOfWrappers(object, parents), parents);
       const key = `${keyName(parent)}${accessorSuffix(parent)}`;
+
       return owner ? `${owner}.${key}` : key;
     }
     case "VariableDeclarator":
     case "AssignmentExpression":
       return bindingName(holder, parents) ?? ownName ?? anonymous;
     case "AssignmentPattern":
-      return field(parent, "right") === holder
-        ? (memberPath(field(parent, "left")) ?? ownName ?? anonymous)
-        : (ownName ?? anonymous);
+      return parent.right === holder ? (memberPath(parent.left) ?? ownName ?? anonymous) : (ownName ?? anonymous);
     case "ExportDefaultDeclaration":
       return ownName ?? "default";
     default:
@@ -303,41 +301,41 @@ export const functionName = (fn: AstNode, parents: ReadonlyMap<AstNode, AstNode>
 
 export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
   const parents = parentMap(file.roots, file.keys);
-  const nodes = file.roots.flatMap((root) => [root, ...descendants(root, file.keys)]);
+  const nodes = allNodes(file.roots, file.keys);
   const functionNodes = nodes.filter(isFunction);
   const moduleKey = moduleId(file.path);
-  const functions = functionNodes.map((fn): FunctionNode => {
+  const measured = functionNodes.map((fn) => {
     const location = locationOf(fn, file.path);
-    return {
+    const info: FunctionNode = {
       id: functionId(location),
       moduleId: moduleKey,
       name: functionName(fn, parents),
       location,
       complexity: cyclomaticComplexity(fn, file.keys),
     };
+
+    return { fn, info };
   });
-  const functionIds = new Map(functionNodes.map((fn, index) => [fn, functions[index]?.id ?? ""]));
+
   return {
     path: file.path,
     imports: extractImports(file, nodes),
-    functions,
+    functions: measured.map(({ info }) => info),
     calls: resolveLocalCalls(functionNodes, {
       file: file.path,
       keys: file.keys,
       parents,
       scope: file.scope,
-      functionIds,
+      functionIds: new Map(measured.map(({ fn, info }) => [fn, info.id])),
     }),
   };
 };
 
-const analyzeSource = (
-  root: string,
-  absolute: string,
-  code: string,
-): Result<FileAnalysis, Diagnostic> => {
+const analyzeSource = (root: string, absolute: string, code: string): Result<FileAnalysis, Diagnostic> => {
   const parsed = parseSource(root, absolute, code);
+
   if (!parsed.ok) return parsed;
+
   try {
     return ok(analyzeParsedFile(parsed.value));
   } catch (error) {
@@ -349,14 +347,12 @@ const analyzeSource = (
   }
 };
 
-const groupDependencyEdges = (
-  sites: readonly { from: string; to: string; location: Location }[],
-): DependencyEdge[] => [
+const groupDependencyEdges = (sites: readonly { from: string; to: string; location: Location }[]): DependencyEdge[] => [
   ...sites
     .reduce((map, site) => {
       const key = `${site.from}\u0000${site.to}`;
       return map.set(key, {
-        kind: "imports" as const,
+        kind: "imports",
         from: site.from,
         to: site.to,
         occurrences: [...(map.get(key)?.occurrences ?? []), site.location],
@@ -365,17 +361,33 @@ const groupDependencyEdges = (
     .values(),
 ];
 
+/** Reads a value every module is guaranteed to have; a miss is a bug in the analysis, not a property of the project. */
+const required = <V>(map: ReadonlyMap<string, V>, id: string, what: string): V => {
+  const value = map.get(id);
+
+  if (value === undefined) throw new Error(`No ${what} computed for ${id}`);
+
+  return value;
+};
+
 const validateRoot = async (input: string): Promise<Result<string>> => {
   const resolved = await realpath(path.resolve(input)).catch(() => undefined);
+
   if (resolved === undefined) return err(`Path does not exist: ${input}`);
+
   const info = await stat(resolved);
+
   return info.isDirectory() ? ok(resolved) : err(`Path is not a directory: ${input}`);
 };
+
+const areaSides = new Set<Side>(["client", "shared", "server", "code"]);
 
 export const analyzeProject = async (input: string): Promise<Result<GraphSnapshot>> => {
   const started = performance.now();
   const rootResult = await validateRoot(input);
+
   if (!rootResult.ok) return rootResult;
+
   const root = rootResult.value;
   const files = await discoverSourceFiles(root);
   const relative = (absolute: string) => toPosix(path.relative(root, absolute));
@@ -412,13 +424,13 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
         : [],
     ),
   );
-  const importDiagnostics = resolutions.flatMap(({ reference, importer, resolution }) =>
+  const importDiagnostics = resolutions.flatMap(({ reference, importer, resolution }): Diagnostic[] =>
     resolution.kind === "unresolved"
       ? [
           {
             file: importer,
             line: reference.location.line,
-            kind: "unresolved-import" as const,
+            kind: "unresolved-import",
             message: resolution.reason,
           },
         ]
@@ -427,7 +439,9 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
 
   const externalsByModule = resolutions.reduce((map, { importer, resolution }) => {
     if (resolution.kind !== "external") return map;
+
     const id = moduleId(importer);
+
     return map.set(id, new Set([...(map.get(id) ?? []), resolution.name]));
   }, new Map<string, Set<string>>());
 
@@ -441,13 +455,17 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
   const metrics = moduleMetrics(moduleIds, dependencyEdges, functionsByModule);
   const apps = findSvelteKitApps(root, modulePaths);
   const structure = buildStructure(modulePaths, dependencyEdges, apps);
-  const areaSides = new Set(["client", "shared", "server", "code"]);
   const areas = detectAreas(
-    moduleIds.filter((id) => areaSides.has(structure.placements.get(id)?.side ?? "")),
+    moduleIds.filter((id) => {
+      const side = structure.placements.get(id)?.side;
+      return side !== undefined && areaSides.has(side);
+    }),
     dependencyEdges,
   );
   const areaOf = new Map(
-    areas.flatMap((area) => area.moduleIds.map((id) => [`${area.parent === null ? "top" : "sub"}:${id}`, area.id] as const)),
+    areas.flatMap((area) =>
+      area.moduleIds.map((id) => [`${area.parent === null ? "top" : "sub"}:${id}`, area.id] as const),
+    ),
   );
 
   return ok({
@@ -467,14 +485,14 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
         id,
         path: modulePath,
         functionIds: (functionsByModule.get(id) ?? []).map((fn) => fn.id),
-        metrics: metrics.get(id) as NonNullable<ReturnType<typeof metrics.get>>,
-        placement: structure.placements.get(id) as NonNullable<ReturnType<typeof structure.placements.get>>,
-        groupId: structure.groupOf.get(id) ?? "",
+        metrics: required(metrics, id, "metrics"),
+        placement: required(structure.placements, id, "placement"),
+        groupId: required(structure.groupOf, id, "group"),
         areaId: areaOf.get(`top:${id}`) ?? null,
         subAreaId: areaOf.get(`sub:${id}`) ?? null,
-        depth: structure.depth.get(id) ?? 0,
-        position: structure.positions.get(id) ?? { x: 0, y: 0 },
-        externals: [...(externalsByModule.get(id) ?? [])].sort(),
+        depth: required(structure.depth, id, "depth"),
+        position: required(structure.positions, id, "position"),
+        externals: [...(externalsByModule.get(id) ?? [])].toSorted(),
       };
     }),
     functions,
@@ -486,22 +504,27 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
 
 export const functionLogic = async (snapshot: GraphSnapshot, id: string): Promise<Result<FunctionLogic>> => {
   const fn = snapshot.functions.find((candidate) => candidate.id === id);
+
   if (!fn) return err(`Unknown function: ${id}`);
+
   const absolute = path.join(snapshot.root, fn.location.file);
   const code = await readFile(absolute, "utf8").catch(() => undefined);
+
   if (code === undefined) return err(`Cannot read ${fn.location.file}`);
+
   const parsed = parseSource(snapshot.root, absolute, code);
+
   if (!parsed.ok) return err(parsed.error.message);
+
   const { roots, keys } = parsed.value;
-  const node = roots
-    .flatMap((root) => descendants(root, keys))
+  const node = allNodes(roots, keys)
+    .filter(isFunction)
     .find(
-      (candidate) =>
-        isFunction(candidate) &&
-        candidate.loc?.start.line === fn.location.line &&
-        candidate.loc?.start.column === fn.location.column,
+      (candidate) => candidate.loc.start.line === fn.location.line && candidate.loc.start.column === fn.location.column,
     );
+
   if (!node) return err("This function moved since the last scan. Rescan and try again.");
+
   return ok(
     buildLogic({
       fn: node,

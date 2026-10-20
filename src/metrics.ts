@@ -1,51 +1,45 @@
-import { type AstNode, type VisitorKeys, descendants, isFunction, stringField } from "./ast";
+import type { TSESTree } from "@typescript-eslint/types";
+import { type VisitorKeys, descendants, isFunction } from "./ast";
 import type { DependencyEdge, FunctionNode, ModuleMetrics } from "./model";
-
-const alwaysBranching = new Set([
-  "IfStatement",
-  "ForStatement",
-  "ForInStatement",
-  "ForOfStatement",
-  "WhileStatement",
-  "DoWhileStatement",
-  "CatchClause",
-  "ConditionalExpression",
-  "LogicalExpression",
-  "AssignmentPattern",
-]);
 
 const logicalAssignments = new Set(["&&=", "||=", "??="]);
 
-export const decisionWeight = (node: AstNode): number =>
-  alwaysBranching.has(node.type)
-    ? 1
-    : node.type === "SwitchCase"
-      ? node.test
-        ? 1
-        : 0
-      : node.type === "AssignmentExpression"
-        ? logicalAssignments.has(stringField(node, "operator") ?? "")
-          ? 1
-          : 0
-        : (node.type === "MemberExpression" || node.type === "CallExpression") &&
-            node.optional === true
-          ? 1
-          : 0;
+export const decisionWeight = (node: TSESTree.Node): number => {
+  switch (node.type) {
+    case "IfStatement":
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement":
+    case "WhileStatement":
+    case "DoWhileStatement":
+    case "CatchClause":
+    case "ConditionalExpression":
+    case "LogicalExpression":
+    case "AssignmentPattern":
+      return 1;
+    case "SwitchCase":
+      return node.test ? 1 : 0;
+    case "AssignmentExpression":
+      return logicalAssignments.has(node.operator) ? 1 : 0;
+    case "MemberExpression":
+    case "CallExpression":
+      return node.optional ? 1 : 0;
+    default:
+      return 0;
+  }
+};
 
-export const isOwnershipBoundary = (node: AstNode) => isFunction(node) || node.type === "ClassBody";
+export const isOwnershipBoundary = (node: TSESTree.Node) => isFunction(node) || node.type === "ClassBody";
 
-export const ownNodes = (fn: AstNode, keys: VisitorKeys): AstNode[] =>
+export const ownNodes = (fn: TSESTree.Node, keys: VisitorKeys): TSESTree.Node[] =>
   descendants(fn, keys, isOwnershipBoundary).filter((node) => !isOwnershipBoundary(node));
 
-export const decisionsIn = (node: AstNode | undefined, keys: VisitorKeys): number =>
+export const decisionsIn = (node: TSESTree.Node | null | undefined, keys: VisitorKeys): number =>
   !node || isOwnershipBoundary(node)
     ? 0
-    : [node, ...descendants(node, keys, isOwnershipBoundary).filter((child) => !isOwnershipBoundary(child))].reduce(
-        (total, child) => total + decisionWeight(child),
-        0,
-      );
+    : [node, ...ownNodes(node, keys)].reduce((total, child) => total + decisionWeight(child), 0);
 
-export const cyclomaticComplexity = (fn: AstNode, keys: VisitorKeys): number =>
+export const cyclomaticComplexity = (fn: TSESTree.Node, keys: VisitorKeys): number =>
   ownNodes(fn, keys).reduce((total, node) => total + decisionWeight(node), 1);
 
 type Adjacency = ReadonlyMap<string, readonly string[]>;
@@ -63,41 +57,47 @@ const adjacencyOf = (edges: readonly DependencyEdge[]): Adjacency =>
     ),
   );
 
-export const stronglyConnectedComponents = (
-  nodes: readonly string[],
-  adjacency: Adjacency,
-): string[][] => {
+export const stronglyConnectedComponents = (nodes: readonly string[], adjacency: Adjacency): string[][] => {
   const index = new Map<string, number>();
-  const lowLink = new Map<string, number>();
   const onStack = new Set<string>();
   const stack: string[] = [];
   const components: string[][] = [];
 
   const popComponent = (root: string): string[] => {
-    const node = stack.pop() as string;
+    const node = stack.pop();
+
+    if (node === undefined) throw new Error(`Component stack ran out before reaching ${root}`);
+
     onStack.delete(node);
+
     return node === root ? [node] : [node, ...popComponent(root)];
   };
 
-  const connect = (node: string): void => {
-    index.set(node, index.size);
-    lowLink.set(node, index.get(node) as number);
+  /** Visits a node and returns its low link. */
+  const connect = (node: string): number => {
+    const order = index.size;
+
+    index.set(node, order);
     stack.push(node);
     onStack.add(node);
-    (adjacency.get(node) ?? []).forEach((next) => {
-      if (!index.has(next)) {
-        connect(next);
-        lowLink.set(node, Math.min(lowLink.get(node) as number, lowLink.get(next) as number));
-      } else if (onStack.has(next)) {
-        lowLink.set(node, Math.min(lowLink.get(node) as number, index.get(next) as number));
-      }
-    });
-    if (lowLink.get(node) === index.get(node)) components.push(popComponent(node));
+
+    const lowLink = (adjacency.get(node) ?? []).reduce((low, next) => {
+      const seen = index.get(next);
+
+      if (seen === undefined) return Math.min(low, connect(next));
+
+      return onStack.has(next) ? Math.min(low, seen) : low;
+    }, order);
+
+    if (lowLink === order) components.push(popComponent(node));
+
+    return lowLink;
   };
 
   nodes.forEach((node) => {
     if (!index.has(node)) connect(node);
   });
+
   return components;
 };
 
@@ -114,29 +114,22 @@ export const weaklyConnectedComponents = (
   const visit = (node: string, island: number, seen: Map<string, number>): Map<string, number> =>
     seen.has(node)
       ? seen
-      : [...(neighbours.get(node) ?? [])].reduce(
-          (acc, next) => visit(next, island, acc),
-          seen.set(node, island),
-        );
+      : [...(neighbours.get(node) ?? [])].reduce((acc, next) => visit(next, island, acc), seen.set(node, island));
+
   return nodes.reduce(
     (state, node) =>
-      state.seen.has(node)
-        ? state
-        : { seen: visit(node, state.count, state.seen), count: state.count + 1 },
+      state.seen.has(node) ? state : { seen: visit(node, state.count, state.seen), count: state.count + 1 },
     { seen: new Map<string, number>(), count: 0 },
   ).seen;
 };
 
-export const cycleGroups = (
-  nodes: readonly string[],
-  edges: readonly DependencyEdge[],
-): Map<string, number> => {
+export const cycleGroups = (nodes: readonly string[], edges: readonly DependencyEdge[]): Map<string, number> => {
   const selfLoops = new Set(edges.filter((edge) => edge.from === edge.to).map((edge) => edge.from));
   return new Map(
     stronglyConnectedComponents(nodes, adjacencyOf(edges))
-      .filter((component) => component.length > 1 || selfLoops.has(component[0] as string))
-      .map((component) => [...component].sort())
-      .sort((a, b) => (a[0] as string).localeCompare(b[0] as string))
+      .filter((component) => component.length > 1 || component.some((node) => selfLoops.has(node)))
+      .map((component) => component.toSorted())
+      .toSorted(([a = ""], [b = ""]) => a.localeCompare(b))
       .flatMap((component, group) => component.map((node) => [node, group] as const)),
   );
 };
@@ -151,10 +144,12 @@ export const moduleMetrics = (
   const external = edges.filter((edge) => edge.from !== edge.to);
   const importers = groupBy(external.map((edge) => [edge.to, edge.from] as const));
   const imported = groupBy(external.map((edge) => [edge.from, edge.to] as const));
+
   return new Map(
     moduleIds.map((id) => {
       const scores = (functionsByModule.get(id) ?? []).map((fn) => fn.complexity);
       const total = scores.reduce((sum, score) => sum + score, 0);
+
       return [
         id,
         {

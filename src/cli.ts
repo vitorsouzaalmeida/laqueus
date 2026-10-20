@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { analyzeProject, functionLogic } from "./analyze";
-import { type GraphSnapshot, type Result, err, ok } from "./model";
+import { type GraphSnapshot, type Result, err, errorMessage, ok } from "./model";
 import { type ServerOptions, startServer } from "./server";
 
 export type CliOptions = { root: string; open: boolean; port: number; help: boolean };
@@ -34,16 +34,22 @@ export const parseCliArgs = (argv: readonly string[], cwd: string): Result<CliOp
         }),
       );
     } catch (error) {
-      return err(error instanceof Error ? error.message : String(error));
+      return err(errorMessage(error));
     }
   })();
+
   if (!parsed.ok) return parsed;
+
   const { values, positionals } = parsed.value;
+
   if (positionals.length > 1) return err("Expected at most one path argument");
+
   const port = Number(values.port);
+
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     return err(`Invalid port: ${values.port}`);
   }
+
   return ok({
     root: path.resolve(cwd, positionals[0] ?? "."),
     open: !values["no-open"],
@@ -54,9 +60,7 @@ export const parseCliArgs = (argv: readonly string[], cwd: string): Result<CliOp
 
 const summary = (snapshot: GraphSnapshot) => {
   const cycles = new Set(
-    snapshot.modules.flatMap((module) =>
-      module.metrics.cycleGroup === null ? [] : [module.metrics.cycleGroup],
-    ),
+    snapshot.modules.flatMap((module) => (module.metrics.cycleGroup === null ? [] : [module.metrics.cycleGroup])),
   ).size;
   return [
     `${snapshot.modules.length} files`,
@@ -69,13 +73,14 @@ const summary = (snapshot: GraphSnapshot) => {
 };
 
 const openBrowser = (url: string) => {
-  const [command, args] =
+  const [command, args]: [string, string[]] =
     process.platform === "darwin"
       ? ["open", [url]]
       : process.platform === "win32"
         ? ["cmd", ["/c", "start", '""', url]]
         : ["xdg-open", [url]];
-  const child = spawn(command, args as string[], { stdio: "ignore", detached: true });
+
+  const child = spawn(command, args, { stdio: "ignore", detached: true });
   child.on("error", () => console.log(`Could not open a browser. Visit ${url}`));
   child.unref();
 };
@@ -88,15 +93,19 @@ export const main = async (
   viewerMiddleware?: ServerOptions["viewerMiddleware"],
 ): Promise<number> => {
   const options = parseCliArgs(argv, cwd);
+
   if (!options.ok) {
     console.error(`${options.error}\n\n${usage}`);
     return 1;
   }
+
   if (options.value.help) {
     console.log(usage);
     return 0;
   }
+
   const viewerDir = viewerDirectory();
+
   if (!viewerMiddleware && !existsSync(path.join(viewerDir, "index.html"))) {
     console.error(`Viewer assets not found in ${viewerDir}. Run "pnpm build" first.`);
     return 1;
@@ -105,10 +114,12 @@ export const main = async (
   console.log(`Scanning ${options.value.root} ...`);
   const scan = () => analyzeProject(options.value.root);
   const initial = await scan();
+
   if (!initial.ok) {
     console.error(initial.error);
     return 1;
   }
+
   console.log(`Scanned in ${initial.value.durationMs} ms: ${summary(initial.value)}`);
 
   const server = await startServer({
@@ -121,8 +132,9 @@ export const main = async (
     viewerMiddleware,
   }).then(
     (running) => ok(running),
-    (error: unknown) => err(error instanceof Error ? error.message : String(error)),
+    (error: unknown) => err(errorMessage(error)),
   );
+
   if (!server.ok) {
     console.error(
       server.error.includes("EADDRINUSE")
@@ -141,8 +153,9 @@ export const main = async (
       process.off("SIGINT", stop);
       process.off("SIGTERM", stop);
       process.once("SIGINT", () => process.exit(130));
-      server.value.close().then(() => resolve(0));
+      void server.value.close().then(() => resolve(0));
     };
+
     process.on("SIGINT", stop);
     process.on("SIGTERM", stop);
   });
@@ -151,12 +164,16 @@ export const main = async (
 const isEntryPoint = () => {
   const entry = process.argv[1];
   return (
-    entry !== undefined &&
-    existsSync(entry) &&
-    realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+    entry !== undefined && existsSync(entry) && realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
   );
 };
 
 if (isEntryPoint()) {
-  main(process.argv.slice(2), process.cwd()).then((code) => process.exit(code));
+  main(process.argv.slice(2), process.cwd()).then(
+    (code) => process.exit(code),
+    (error: unknown) => {
+      console.error(errorMessage(error));
+      process.exit(1);
+    },
+  );
 }

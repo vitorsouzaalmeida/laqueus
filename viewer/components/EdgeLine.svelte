@@ -1,9 +1,16 @@
 <script lang="ts">
   import { getContext } from "svelte";
-  import type { Point } from "../layered";
+  import type { Point } from "../../src/model";
   import { type GraphContext, type edgePaint, graphContext } from "../scene";
 
-  type Props = { id: string; path: string; arrow: string; at: Point; label: string; paint: ReturnType<typeof edgePaint> };
+  type Props = {
+    id: string;
+    path: string;
+    arrow: string;
+    at: Point;
+    label: string;
+    paint: ReturnType<typeof edgePaint>;
+  };
 
   let { id, path, arrow, at, label, paint }: Props = $props();
 
@@ -11,7 +18,13 @@
 </script>
 
 <g>
-  <path class="line" d={path} style:stroke={paint.stroke} style:stroke-width="{paint.width}px" style:stroke-dasharray={paint.dash} />
+  <path
+    class="line"
+    d={path}
+    style:stroke={paint.stroke}
+    style:stroke-width="{paint.width}px"
+    style:stroke-dasharray={paint.dash}
+  />
   <polygon class="arrow" points={arrow} style:fill={paint.stroke} />
   <path class="hit" d={path} onclick={() => graph.select(id)} role="presentation" />
   {#if label}

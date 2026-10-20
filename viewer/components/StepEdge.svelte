@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Position, getSmoothStepPath } from "@xyflow/svelte";
   import { getContext } from "svelte";
-  import type { Point } from "../layered";
+  import type { Point } from "../../src/model";
   import { type EdgeData, type GraphContext, type Shape, arrowHead, edgePaint, edgeTone, graphContext } from "../scene";
   import EdgeLine from "./EdgeLine.svelte";
 
@@ -32,6 +32,7 @@
       offset: 22,
       ...(arrow.end.y > start.y + 44 ? { centerY: start.y + 22 } : {}),
     });
+
     return { path, arrow: arrow.points, label: { x: labelX, y: labelY } };
   });
 </script>

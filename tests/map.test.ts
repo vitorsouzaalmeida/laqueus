@@ -8,8 +8,16 @@ const options = { maxPerRow: 3, gapX: 10, gapY: 20 };
 
 describe("layered layout", () => {
   it("places importers above what they import", () => {
-    const positions = layered([box("a"), box("b"), box("c")], [{ from: "a", to: "b" }, { from: "b", to: "c" }], options);
+    const positions = layered(
+      [box("a"), box("b"), box("c")],
+      [
+        { from: "a", to: "b" },
+        { from: "b", to: "c" },
+      ],
+      options,
+    );
     const y = (id: string) => positions.get(id)?.y ?? Number.NaN;
+
     expect(y("a")).toBeLessThan(y("b"));
     expect(y("b")).toBeLessThan(y("c"));
   });
@@ -26,13 +34,18 @@ describe("layered layout", () => {
       options,
     );
     const y = (id: string) => positions.get(id)?.y ?? Number.NaN;
+
     expect(y("a")).toBeLessThan(y("b"));
     expect(y("in")).toBeLessThan(y("a"));
     expect(y("out")).toBeGreaterThan(y("b"));
   });
 
   it("wraps wide layers into rows", () => {
-    const positions = layered(["a", "b", "c", "d", "e"].map((id) => box(id)), [], options);
+    const positions = layered(
+      ["a", "b", "c", "d", "e"].map((id) => box(id)),
+      [],
+      options,
+    );
     expect(new Set([...positions.values()].map((point) => point.y)).size).toBe(2);
   });
 });
@@ -41,8 +54,11 @@ describe("drill-down map", () => {
   it("starts with one card per side and keeps tests in the tray", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const hidden = buildTree(snapshot, { grouping: "areas", tray: new Set() });
+
     expect(hidden.nodes.get("root")?.children).toEqual(["side:client", "side:shared", "side:server"]);
+
     const shown = buildTree(snapshot, { grouping: "areas", tray: new Set(["test"]) });
+
     expect(shown.nodes.get("root")?.children).toContain("side:test");
   });
 
@@ -50,9 +66,10 @@ describe("drill-down map", () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const tree = buildTree(snapshot, { grouping: "areas", tray: new Set() });
     const view = buildView(snapshot, tree, "root");
+
     expect(view.mode).toBe("cards");
     expect(view.items.map((item) => item.id)).toEqual(["side:client", "side:shared", "side:server"]);
-    expect(view.links.map((link) => `${link.from} -> ${link.to} (${link.count})`).sort()).toEqual([
+    expect(view.links.map((link) => `${link.from} -> ${link.to} (${link.count})`).toSorted()).toEqual([
       "side:client -> side:shared (2)",
       "side:server -> side:shared (1)",
     ]);
@@ -62,6 +79,7 @@ describe("drill-down map", () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const tree = buildTree(snapshot, { grouping: "folders", tray: new Set() });
     const view = buildView(snapshot, tree, "side:server");
+
     expect(view.mode).toBe("files");
     expect(view.items.filter((item) => item.kind === "stub").map((item) => item.label)).toEqual(["Shared"]);
     expect(view.links.find((link) => link.to === "stub:side:shared")).toMatchObject({
@@ -74,19 +92,23 @@ describe("drill-down map", () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const tree = buildTree(snapshot, { grouping: "folders", tray: new Set() });
     const route = snapshot.routes.find((candidate) => candidate.url === "/");
+
     if (!route) throw new Error("missing route");
+
     const view = buildRouteView(snapshot, tree, route);
-    expect(view.items.filter((item) => item.column === 0 && item.kind === "file").map((item) => item.label).sort()).toEqual([
-      "+layout.svelte",
-      "+page.svelte",
-      "Nav.svelte",
-      "format.ts",
-    ]);
-    expect(view.items.filter((item) => item.column === 1).map((item) => item.label).sort()).toEqual([
-      "+page.server.ts",
-      "db.ts",
-      "format.ts",
-    ]);
+
+    expect(
+      view.items
+        .filter((item) => item.column === 0 && item.kind === "file")
+        .map((item) => item.label)
+        .toSorted(),
+    ).toEqual(["+layout.svelte", "+page.svelte", "Nav.svelte", "format.ts"]);
+    expect(
+      view.items
+        .filter((item) => item.column === 1)
+        .map((item) => item.label)
+        .toSorted(),
+    ).toEqual(["+page.server.ts", "db.ts", "format.ts"]);
     expect(view.items.find((item) => item.column === 0 && item.kind === "group")?.moduleIds).toEqual([
       "module:src/lib/client-only.ts",
     ]);

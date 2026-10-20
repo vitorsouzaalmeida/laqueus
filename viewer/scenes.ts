@@ -22,23 +22,39 @@ const bendFor = (pairs: ReadonlySet<string>, from: string, to: string, amount: n
 export const mapScene = (view: MapView): Scene => {
   const cards = view.mode === "cards";
   const pairs = new Set(view.links.map((link) => `${link.from}->${link.to}`));
+
   return {
     nodes: view.items.map((item): SceneNode => {
       const shared = { label: itemLabel(item), side: item.side ?? "code", bucket: ccBucket(item.maxCC) };
+
       if (item.kind === "file") {
         const size = item.entries > 0 ? 30 : 24;
         return {
           id: item.id,
           width: size,
           height: size,
-          data: { kind: "dot", ...shared, cyclic: item.cyclic, entry: item.entries > 0, tint: "side", captionWidth: 170, fontSize: 11 },
+          data: {
+            kind: "dot",
+            ...shared,
+            cyclic: item.cyclic,
+            entry: item.entries > 0,
+            tint: "side",
+            captionWidth: 170,
+            fontSize: 11,
+          },
         };
       }
+
       const box = item.kind === "group" ? card : stub;
+
       return {
         id: item.id,
         ...box,
-        data: { kind: item.kind === "group" ? "card" : "stub", ...shared, cyclic: item.kind === "group" && item.cyclic },
+        data: {
+          kind: item.kind === "group" ? "card" : "stub",
+          ...shared,
+          cyclic: item.kind === "group" && item.cyclic,
+        },
       };
     }),
     edges: view.links.map((link) => ({
@@ -60,6 +76,7 @@ export const functionScene = (
 ): Scene => {
   const calls = functions.flatMap((fn) => callsFrom(fn.id));
   const pairs = new Set(calls.map((edge) => `${edge.from}->${edge.to}`));
+
   return {
     nodes: functions.map((fn) => ({
       id: fn.id,

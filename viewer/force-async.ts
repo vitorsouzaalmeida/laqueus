@@ -1,12 +1,17 @@
 import { type ForceLink, type ForceNode, forceLayout } from "./force";
 import type { ForceReply, ForceRequest } from "./force-worker";
-import type { Point } from "./layered";
+import type { Point } from "../src/model";
 
 const workerFrom = 150;
 
 type Waiting = { request: ForceRequest; resolve: (positions: Map<string, Point>) => void };
 
-const pool = { worker: undefined as Worker | null | undefined, next: 0, waiting: new Map<number, Waiting>() };
+/** `worker` is undefined until first use and null once workers turn out to be unavailable. */
+const pool: { worker: Worker | null | undefined; next: number; waiting: Map<number, Waiting> } = {
+  worker: undefined,
+  next: 0,
+  waiting: new Map(),
+};
 
 const inline = (request: ForceRequest) => forceLayout(request.nodes, request.links);
 
@@ -32,18 +37,26 @@ const settle = (event: MessageEvent<ForceReply>) => {
 
 const workerOf = (): Worker | null => {
   if (pool.worker !== undefined) return pool.worker;
+
   const worker = spawn();
+
   worker?.addEventListener("message", settle);
   worker?.addEventListener("error", giveUp);
   pool.worker = worker;
+
   return worker;
 };
 
-export const forceLayoutAsync = (nodes: readonly ForceNode[], links: readonly ForceLink[]): Promise<Map<string, Point>> => {
+export const forceLayoutAsync = (
+  nodes: readonly ForceNode[],
+  links: readonly ForceLink[],
+): Promise<Map<string, Point>> => {
   const request: ForceRequest = { id: pool.next, nodes: [...nodes], links: [...links] };
   pool.next += 1;
   const worker = nodes.length < workerFrom || typeof Worker === "undefined" ? null : workerOf();
+
   if (!worker) return Promise.resolve(inline(request));
+
   return new Promise((resolve) => {
     pool.waiting.set(request.id, { request, resolve });
     worker.postMessage(request);

@@ -4,7 +4,8 @@ import { analyzeCode } from "./helpers";
 const callPairs = (fileName: string, code: string) => {
   const analysis = analyzeCode(fileName, code);
   const name = (id: string) => analysis.functions.find((fn) => fn.id === id)?.name ?? id;
-  return analysis.calls.map((edge) => `${name(edge.from)} -> ${name(edge.to)}`).sort();
+
+  return analysis.calls.map((edge) => `${name(edge.from)} -> ${name(edge.to)}`).toSorted();
 };
 
 describe("local call resolution", () => {
@@ -80,9 +81,8 @@ class Service {
     const analysis = analyzeCode("calls.ts", code);
     const innerB = analysis.functions.find((fn) => fn.name === "b" && fn.location.line === 18);
     const helper = analysis.functions.find((fn) => fn.name === "helper");
-    expect(analysis.calls).toContainEqual(
-      expect.objectContaining({ from: helper?.id, to: innerB?.id }),
-    );
+
+    expect(analysis.calls).toContainEqual(expect.objectContaining({ from: helper?.id, to: innerB?.id }));
   });
 
   it("groups repeated call sites into one edge", () => {
@@ -90,6 +90,7 @@ class Service {
     const a = analysis.functions.find((fn) => fn.name === "a");
     const outerB = analysis.functions.find((fn) => fn.name === "b" && fn.location.line === 14);
     const edge = analysis.calls.find((call) => call.from === a?.id && call.to === outerB?.id);
+
     expect(edge?.occurrences.map((location) => location.line)).toEqual([7, 12]);
   });
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { ViewportPortal } from "@xyflow/svelte";
-  import type { Point } from "../layered";
-  import type { EdgeData, GraphEdge } from "../scene";
+  import type { Point } from "../../src/model";
+  import type { GraphEdge } from "../scene";
   import LinkEdge from "./LinkEdge.svelte";
   import StepEdge from "./StepEdge.svelte";
 
@@ -9,7 +9,7 @@
 
   const nowhere: Point = { x: 0, y: 0 };
 
-  const ordered = $derived([...edges].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0)));
+  const ordered = $derived(edges.toSorted((a, b) => a.zIndex - b.zIndex));
 </script>
 
 <ViewportPortal target="back">
@@ -21,9 +21,9 @@
         target: edge.target,
         from: centers.get(edge.source) ?? nowhere,
         to: centers.get(edge.target) ?? nowhere,
-        data: edge.data as EdgeData,
+        data: edge.data,
       }}
-      {#if edge.type === "step"}
+      {#if edge.data.route === "step"}
         <StepEdge {...props} />
       {:else}
         <LinkEdge {...props} />

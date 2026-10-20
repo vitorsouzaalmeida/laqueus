@@ -1,8 +1,16 @@
 import { mount, tick, unmount } from "svelte";
 import Graph from "./components/Graph.svelte";
 import type { ColorMode } from "./graph";
-import type { Point } from "./layered";
-import { type GraphControls, type Layout, type LookFn, type Placement, type Scene, type Viewport, plainLook } from "./scene";
+import type { Point } from "../src/model";
+import {
+  type GraphControls,
+  type Layout,
+  type LookFn,
+  type ViewPlacement,
+  type Scene,
+  type Viewport,
+  plainLook,
+} from "./scene";
 
 export type GraphHandlers = { select: (id: string | null) => void; open: (id: string) => void };
 
@@ -15,35 +23,37 @@ export type ShowOptions = {
   color: ColorMode;
   look: LookFn;
   hover: boolean;
-  placement: Placement;
+  placement: ViewPlacement;
 };
 
 export type GraphView = ReturnType<typeof createGraphView>;
 
 /** Bridges the imperative viewer code to one Svelte Flow graph: one mount per scene, everything else reactive. */
 export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) => {
-  const ui = $state({
-    selected: null as string | null,
-    color: "side" as ColorMode,
-    look: (() => plainLook) as LookFn,
+  const ui = $state<{ selected: string | null; color: ColorMode; look: LookFn }>({
+    selected: null,
+    color: "side",
+    look: () => plainLook,
   });
   let layout = $state.raw<Layout>({ centers: new Map(), fit: false });
-  const live = {
-    app: null as ReturnType<typeof mount> | null,
-    controls: null as GraphControls | null,
-    pendingCenter: null as string | null,
-    scene: {},
-    layout: {},
-    waiting: false,
-  };
+  /** `scene` and `layout` count mounts and relayouts, so late async layouts can tell they are stale. */
+  const live: {
+    app: ReturnType<typeof mount> | null;
+    controls: GraphControls | null;
+    pendingCenter: string | null;
+    scene: number;
+    layout: number;
+    waiting: boolean;
+  } = { app: null, controls: null, pendingCenter: null, scene: 0, layout: 0, waiting: false };
 
   const clear = () => {
     if (live.app) void unmount(live.app);
+
     live.app = null;
     live.controls = null;
     live.pendingCenter = null;
-    live.scene = {};
-    live.layout = {};
+    live.scene += 1;
+    live.layout += 1;
     live.waiting = false;
   };
 
@@ -56,13 +66,17 @@ export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) =>
       ui.selected = options.selected;
       ui.color = options.color;
       ui.look = options.look;
+
       const scene = live.scene;
       const layouts = live.layout;
       const before = layout;
+
       const start = (centers: ReadonlyMap<string, Point>) => {
         if (scene !== live.scene) return;
+
         live.waiting = false;
         if (layouts === live.layout || layout === before) layout = { centers, fit: false };
+
         live.app = mount(Graph, {
           target,
           props: {
@@ -92,6 +106,7 @@ export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) =>
           },
         });
       };
+
       if (options.centers instanceof Promise) {
         live.waiting = true;
         void options.centers.then(start);
@@ -110,8 +125,9 @@ export const createGraphView = (target: HTMLElement, handlers: GraphHandlers) =>
     },
     /** Moves the given nodes (others keep their place) and refits. */
     relayout: (centers: Centers, fit = true) => {
-      const run = {};
-      live.layout = run;
+      live.layout += 1;
+      const run = live.layout;
+
       if (!(centers instanceof Promise)) layout = { centers, fit };
       else
         void centers.then((resolved) => {

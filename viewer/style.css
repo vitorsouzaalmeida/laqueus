@@ -707,22 +707,44 @@ main {
   background: var(--bg);
 }
 
-.lane-badge.side-client { box-shadow: inset 3px 0 0 var(--side-client); }
-.lane-badge.side-shared { box-shadow: inset 3px 0 0 var(--side-shared); }
-.lane-badge.side-server { box-shadow: inset 3px 0 0 var(--side-server); }
-.lane-badge.side-code { box-shadow: inset 3px 0 0 var(--side-code); }
-.lane-badge.side-unreached { box-shadow: inset 3px 0 0 var(--side-unreached); }
-.lane-badge.side-test { box-shadow: inset 3px 0 0 var(--side-test); }
-.lane-badge.side-tooling { box-shadow: inset 3px 0 0 var(--side-tooling); }
+.lane-badge.side-client {
+  box-shadow: inset 3px 0 0 var(--side-client);
+}
+.lane-badge.side-shared {
+  box-shadow: inset 3px 0 0 var(--side-shared);
+}
+.lane-badge.side-server {
+  box-shadow: inset 3px 0 0 var(--side-server);
+}
+.lane-badge.side-code {
+  box-shadow: inset 3px 0 0 var(--side-code);
+}
+.lane-badge.side-unreached {
+  box-shadow: inset 3px 0 0 var(--side-unreached);
+}
+.lane-badge.side-test {
+  box-shadow: inset 3px 0 0 var(--side-test);
+}
+.lane-badge.side-tooling {
+  box-shadow: inset 3px 0 0 var(--side-tooling);
+}
 
 .badge + .badge {
   margin-left: 4px;
 }
 
-.badge.role-client { color: var(--side-client); }
-.badge.role-server { color: var(--side-server); }
-.badge.role-endpoint { color: var(--side-server); }
-.badge.role-layout { color: var(--muted); }
+.badge.role-client {
+  color: var(--side-client);
+}
+.badge.role-server {
+  color: var(--side-server);
+}
+.badge.role-endpoint {
+  color: var(--side-server);
+}
+.badge.role-layout {
+  color: var(--muted);
+}
 
 details > summary {
   cursor: pointer;

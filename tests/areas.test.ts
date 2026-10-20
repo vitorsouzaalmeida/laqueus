@@ -23,18 +23,21 @@ describe("area detection", () => {
   it("groups files that import each other and names them by folder", () => {
     const areas = detectAreas(ids, edges);
     const top = areas.filter((area) => area.parent === null);
+
     expect(top.map((area) => [area.label, area.moduleIds.length])).toEqual([
       ["lib/billing", 5],
       ["lib/chat", 5],
       ["Standalone files", 1],
     ]);
+
     const billingArea = top[0];
+
     expect(billingArea?.internalImports).toBe(20);
     expect(billingArea?.touchingImports).toBe(21);
   });
 
   it("is deterministic", () => {
-    expect(detectAreas([...ids].reverse(), edges)).toEqual(detectAreas(ids, edges));
+    expect(detectAreas(ids.toReversed(), edges)).toEqual(detectAreas(ids, edges));
   });
 
   it("assigns every scanned application file to an area", async () => {
@@ -42,6 +45,7 @@ describe("area detection", () => {
     const application = snapshot.modules.filter((module) =>
       ["client", "shared", "server"].includes(module.placement.side),
     );
+
     expect(application.every((module) => module.areaId !== null)).toBe(true);
     expect(snapshot.modules.filter((module) => module.placement.side === "test")[0]?.areaId).toBeNull();
   });
@@ -67,9 +71,7 @@ describe("SvelteKit routes", () => {
 describe("external packages", () => {
   it("records bare package imports per file", async () => {
     const snapshot = await scan(fixture("imports"));
-    expect(snapshot.modules.find((module) => module.path === "src/main.ts")?.externals).toEqual([
-      "external-package",
-    ]);
+    expect(snapshot.modules.find((module) => module.path === "src/main.ts")?.externals).toEqual(["external-package"]);
   });
 });
 

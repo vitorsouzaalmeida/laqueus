@@ -1,5 +1,5 @@
-import type { FunctionLogic, LogicEdgeKind, LogicNode, LogicNodeKind } from "../src/model";
-import { type Point, layered } from "./layered";
+import type { FunctionLogic, LogicEdgeKind, LogicNode, LogicNodeKind, Point } from "../src/model";
+import { layered } from "./layered";
 
 export type FlowItem = {
   id: string;
@@ -16,7 +16,7 @@ export type FlowLink = { id: string; from: string; to: string; label: string; ki
 
 export type FlowView = { items: FlowItem[]; links: FlowLink[] };
 
-export const structuralKinds: ReadonlySet<string> = new Set(["decision", "loop", "switch", "try"]);
+export const structuralKinds: ReadonlySet<LogicNodeKind> = new Set(["decision", "loop", "switch", "try"]);
 
 const largeFlow = 60;
 const charWidth = 6.8;
@@ -25,12 +25,15 @@ const lineHeight = 15;
 export const defaultCollapsed = (logic: FunctionLogic): Set<string> =>
   logic.nodes.length <= largeFlow
     ? new Set()
-    : new Set(logic.nodes.filter((node) => structuralKinds.has(node.kind) && node.region !== null).map((node) => node.id));
+    : new Set(
+        logic.nodes.filter((node) => structuralKinds.has(node.kind) && node.region !== null).map((node) => node.id),
+      );
 
 export const regionChain = (logic: FunctionLogic, id: string): string[] => {
   const byId = new Map(logic.nodes.map((node) => [node.id, node]));
   const walk = (region: string | null): string[] =>
     region === null ? [] : [region, ...walk(byId.get(region)?.region ?? null)];
+
   return walk(byId.get(id)?.region ?? null);
 };
 
@@ -50,6 +53,7 @@ const sizeOf = (kind: FlowItem["kind"], lines: readonly string[]) => {
   const longest = Math.max(4, ...lines.map((line) => line.length));
   const width = Math.min(380, Math.max(110, longest * charWidth + 28));
   const height = lines.length * lineHeight + 22;
+
   return kind === "decision" || kind === "switch"
     ? { width: width * 1.35 + 20, height: height * 1.7 + 12 }
     : kind === "loop"
@@ -63,21 +67,24 @@ const labelFor = (node: LogicNode) => {
   const extras = [node.weight > 0 ? `CC +${node.weight}` : null, node.unreachable ? "(unreachable)" : null].filter(
     (line): line is string => line !== null,
   );
+
   return [...base, ...extras];
 };
 
 export const flowView = (logic: FunctionLogic, collapsed: ReadonlySet<string>): FlowView => {
   const chains = new Map(logic.nodes.map((node) => [node.id, regionChain(logic, node.id)]));
   const representative = (id: string) => {
-    const hiddenBy = [...(chains.get(id) ?? [])].reverse().find((region) => collapsed.has(region));
+    const hiddenBy = (chains.get(id) ?? []).toReversed().find((region) => collapsed.has(region));
     return hiddenBy ? `collapsed:${hiddenBy}` : id;
   };
+
   const visible = logic.nodes.filter((node) => representative(node.id) === node.id);
   const placeholders = [...collapsed]
     .filter((id) => logic.nodes.some((node) => node.id === id) && representative(id) === id)
     .map((id) => {
       const hidden = logic.nodes.filter((node) => representative(node.id) === `collapsed:${id}`).length;
       const lines = [`… ${hidden} step${hidden === 1 ? "" : "s"} inside`, "double-click to expand"];
+
       return {
         id: `collapsed:${id}`,
         kind: "collapsed" as const,
@@ -104,6 +111,7 @@ export const flowView = (logic: FunctionLogic, collapsed: ReadonlySet<string>): 
     }),
     ...placeholders,
   ];
+
   const known = new Set(items.map((item) => item.id));
   const links = logic.edges
     .map((edge) => ({ ...edge, from: representative(edge.from), to: representative(edge.to) }))
@@ -111,9 +119,20 @@ export const flowView = (logic: FunctionLogic, collapsed: ReadonlySet<string>): 
     .reduce((map, edge) => {
       const key = `${edge.from}->${edge.to}`;
       const existing = map.get(key);
-      const label = existing && existing.label !== edge.label ? [existing.label, edge.label].filter(Boolean).join(" / ") : edge.label;
-      return map.set(key, { id: `flow:${key}`, from: edge.from, to: edge.to, label, kind: existing?.kind ?? edge.kind });
+      const label =
+        existing && existing.label !== edge.label
+          ? [existing.label, edge.label].filter(Boolean).join(" / ")
+          : edge.label;
+
+      return map.set(key, {
+        id: `flow:${key}`,
+        from: edge.from,
+        to: edge.to,
+        label,
+        kind: existing?.kind ?? edge.kind,
+      });
     }, new Map<string, FlowLink>());
+
   return { items, links: [...links.values()] };
 };
 

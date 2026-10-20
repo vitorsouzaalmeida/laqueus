@@ -9,13 +9,14 @@ import type {
   Location,
   ModuleNode,
   Route,
+  Side,
 } from "../src/model";
 import { groupBy } from "./dom";
 
 export type Index = {
   modules: Map<string, ModuleNode>;
   functions: Map<string, FunctionNode>;
-  lanes: Map<string, Lane>;
+  lanes: Map<Side, Lane>;
   areas: Map<string, Area>;
   routes: Map<string, Route>;
   importsFrom: Map<string, DependencyEdge[]>;
@@ -38,31 +39,27 @@ export const buildIndex = (data: GraphSnapshot): Index => ({
   callsTo: groupBy(data.callEdges, (edge) => edge.to),
   diagnosticsByFile: groupBy(data.diagnostics, (diagnostic) => diagnostic.file),
   cycles: new Map(
-    [
-      ...groupBy(
-        data.modules.filter((module) => module.metrics.cycleGroup !== null),
-        (module) => String(module.metrics.cycleGroup),
-      ),
-    ].map(([group, modules]) => [Number(group), modules]),
+    [...groupBy(data.modules, (module) => module.metrics.cycleGroup)].flatMap(([group, modules]) =>
+      group === null ? [] : [[group, modules] as const],
+    ),
   ),
 });
 
 export const lineRef = (location: Location) => `${location.file}:${location.line}`;
 export const fullRef = (location: Location) => `${location.file}:${location.line}:${location.column + 1}`;
-export const moduleIdOf = (path: string) => `module:${path}`;
-export const splitEdgeId = (id: string, prefix: string) => id.slice(prefix.length).split("->") as [string, string];
 
 export const externalCounts = (modules: readonly ModuleNode[]) =>
   [
     ...modules
       .flatMap((module) => module.externals)
       .reduce((map, name) => map.set(name, (map.get(name) ?? 0) + 1), new Map<string, number>()),
-  ].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  ].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 
 export const routeLabel = (route: Route, multipleApps: boolean) => {
   const groups = route.directory
     .split("/")
     .filter((segment) => /^\(.*\)$/.test(segment))
     .join(" ");
+
   return `${multipleApps ? `${route.app || "."} ` : ""}${route.url}${groups ? ` ${groups}` : ""}`;
 };

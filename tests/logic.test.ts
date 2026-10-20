@@ -3,17 +3,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseSource } from "../src/analyze";
-import { descendants, isFunction } from "../src/ast";
+import { allNodes, isFunction } from "../src/ast";
 import { buildLogic } from "../src/logic";
 import { cyclomaticComplexity } from "../src/metrics";
 import type { FunctionLogic } from "../src/model";
 
+const flatten = (items: FunctionLogic["outline"], depth = 0): string[] =>
+  items.flatMap((item) => [`${"  ".repeat(depth)}${item.text}`, ...flatten(item.children, depth + 1)]);
+
 const logicOf = (code: string, fileName = "logic.ts"): FunctionLogic[] => {
   const parsed = parseSource("/virtual", `/virtual/${fileName}`, code);
+
   if (!parsed.ok) throw new Error(parsed.error.message);
+
   const { roots, keys } = parsed.value;
-  return roots
-    .flatMap((root) => descendants(root, keys))
+
+  return allNodes(roots, keys)
     .filter(isFunction)
     .map((fn, index) =>
       buildLogic({ fn, name: `fn${index}`, file: fileName, code, keys, complexity: cyclomaticComplexity(fn, keys) }),
@@ -22,6 +27,7 @@ const logicOf = (code: string, fileName = "logic.ts"): FunctionLogic[] => {
 
 const edgeList = (logic: FunctionLogic) => {
   const label = (id: string) => logic.nodes.find((node) => node.id === id)?.label.split("\n")[0];
+
   return logic.edges.map((edge) => `${label(edge.from)} -[${edge.label || edge.kind}]-> ${label(edge.to)}`);
 };
 
@@ -48,7 +54,9 @@ function createOrder(input: string, items: { qty: number }[]) {
 describe("function logic", () => {
   it("builds a statement-level flowchart", () => {
     const [logic] = logicOf(sampleSource);
+
     if (!logic) throw new Error("missing logic");
+
     expect(logic.nodes.map((node) => node.kind)).toEqual([
       "start",
       "block",
@@ -84,7 +92,10 @@ describe("function logic", () => {
 
   it("explains the complexity score decision by decision", () => {
     const [logic] = logicOf(sampleSource);
-    const weights = (logic?.nodes ?? []).filter((node) => node.weight > 0).map((node) => [node.label.split("\n")[0], node.weight]);
+    const weights = (logic?.nodes ?? [])
+      .filter((node) => node.weight > 0)
+      .map((node) => [node.label.split("\n")[0], node.weight]);
+
     expect(weights).toEqual([
       ["if (!user || user.disabled)", 2],
       ["for (const item of items)", 1],
@@ -96,8 +107,6 @@ describe("function logic", () => {
 
   it("writes a readable outline", () => {
     const [logic] = logicOf(sampleSource);
-    const flatten = (items: FunctionLogic["outline"], depth = 0): string[] =>
-      items.flatMap((item) => [`${"  ".repeat(depth)}${item.text}`, ...flatten(item.children, depth + 1)]);
     expect(flatten(logic?.outline ?? [])).toEqual([
       "Call load",
       "If !user || user.disabled",
@@ -127,7 +136,9 @@ function load() {
   }
   after();
 }`);
+
     if (!logic) throw new Error("missing logic");
+
     expect(edgeList(logic)).toContain("try -[always runs]-> finally");
     expect(logic.nodes.find((node) => node.kind === "finally")?.unreachable).toBe(false);
     expect(logic.nodes.find((node) => node.label === "after();")?.unreachable).toBe(true);
@@ -152,7 +163,9 @@ function route(kind: string) {
   return 1;
   dead();
 }`);
+
     if (!logic) throw new Error("missing logic");
+
     expect(edgeList(logic)).toEqual(
       expect.arrayContaining([
         'switch (kind) -[case "a"]-> go();',
@@ -171,12 +184,17 @@ function route(kind: string) {
   it("adds up to each function's complexity score", async () => {
     const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
     const sources = await Promise.all(
-      ["analyze.ts", "resolve.ts", "structure.ts", "areas.ts", "logic.ts"].map((file) => readFile(path.join(fixtures, file), "utf8")),
+      ["analyze.ts", "resolve.ts", "structure.ts", "areas.ts", "logic.ts"].map((file) =>
+        readFile(path.join(fixtures, file), "utf8"),
+      ),
     );
     const mismatches = sources
       .flatMap((code) => logicOf(code))
       .filter((logic) => logic.nodes.reduce((sum, node) => sum + node.weight, 1) !== logic.complexity)
-      .map((logic) => `${logic.name}: ${logic.nodes.reduce((sum, node) => sum + node.weight, 1)} vs ${logic.complexity}`);
+      .map(
+        (logic) => `${logic.name}: ${logic.nodes.reduce((sum, node) => sum + node.weight, 1)} vs ${logic.complexity}`,
+      );
+
     expect(mismatches).toEqual([]);
   });
 

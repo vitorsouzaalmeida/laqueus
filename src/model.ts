@@ -93,11 +93,7 @@ export type CallEdge = {
   occurrences: Location[];
 };
 
-export type DiagnosticKind =
-  | "parse-error"
-  | "unresolved-import"
-  | "unsupported-syntax"
-  | "server-only-import";
+export type DiagnosticKind = "parse-error" | "unresolved-import" | "unsupported-syntax" | "server-only-import";
 
 export type Diagnostic = {
   file: string;
@@ -172,6 +168,8 @@ export type Result<T, E = string> = { ok: true; value: T } | { ok: false; error:
 export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
 export const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
 
+export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 export const moduleId = (path: string) => `module:${path}`;
-export const functionId = (location: Location) =>
-  `fn:${location.file}:${location.line}:${location.column}`;
+export const modulePath = (id: string) => id.slice("module:".length);
+export const functionId = (location: Location) => `fn:${location.file}:${location.line}:${location.column}`;

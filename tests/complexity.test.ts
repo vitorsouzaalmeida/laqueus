@@ -65,19 +65,23 @@ const obj = {
 
 const eslintScores = (code: string) =>
   new Linter({ configType: "flat" })
-    .verify(code, [
-      {
-        files: ["**/*.ts"],
-        languageOptions: { parser: tsParser },
-        rules: { complexity: ["error", { max: 0, variant: "classic" }] },
-      },
-    ], "cases.ts")
+    .verify(
+      code,
+      [
+        {
+          files: ["**/*.ts"],
+          languageOptions: { parser: tsParser },
+          rules: { complexity: ["error", { max: 0, variant: "classic" }] },
+        },
+      ],
+      "cases.ts",
+    )
     .filter((message) => message.ruleId === "complexity" && !message.message.startsWith("Class field"))
     .map((message) => ({
       line: message.line,
       complexity: Number(/complexity of (\d+)/.exec(message.message)?.[1]),
     }))
-    .sort((x, y) => x.line - y.line);
+    .toSorted((x, y) => x.line - y.line);
 
 describe("cyclomatic complexity", () => {
   const functions = analyzeCode("cases.ts", cases).functions;
@@ -129,11 +133,11 @@ describe("cyclomatic complexity", () => {
   it("agrees with ESLint's complexity rule", () => {
     const ours = functions
       .map((fn) => ({ line: fn.location.line, complexity: fn.complexity }))
-      .sort((x, y) => x.line - y.line);
+      .toSorted((x, y) => x.line - y.line);
     expect(ours).toEqual(eslintScores(cases));
   });
 
-  it("measures functions in <script lang=\"ts\"> blocks of Svelte files", () => {
+  it('measures functions in <script lang="ts"> blocks of Svelte files', () => {
     const svelte = analyzeCode(
       "Component.svelte",
       `<script lang="ts">
@@ -144,7 +148,8 @@ describe("cyclomatic complexity", () => {
 </script>
 <p>{pick(1) ? "yes" : "no"}</p>`,
     ).functions;
-    expect(svelte.map((fn) => ({ name: fn.name, complexity: fn.complexity, line: fn.location.line })))
-      .toEqual([{ name: "pick", complexity: 3, line: 2 }]);
+    expect(svelte.map((fn) => ({ name: fn.name, complexity: fn.complexity, line: fn.location.line }))).toEqual([
+      { name: "pick", complexity: 3, line: 2 },
+    ]);
   });
 });

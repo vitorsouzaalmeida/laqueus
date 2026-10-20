@@ -1,8 +1,8 @@
-import type { Edge, Node } from "@xyflow/svelte";
+import type { Node } from "@xyflow/svelte";
 import type { Side } from "../src/model";
 import type { FlowItem } from "./flow";
 import type { ColorMode } from "./graph";
-import type { Point } from "./layered";
+import type { Point } from "../src/model";
 
 export type Shape = { kind: "rect"; halfWidth: number; halfHeight: number } | { kind: "circle"; radius: number };
 
@@ -44,7 +44,8 @@ export type SceneEdge = { id: string; source: string; target: string; data: Edge
 export type Scene = { nodes: SceneNode[]; edges: SceneEdge[] };
 
 export type GraphNode = Node<NodeData>;
-export type GraphEdge = Edge<EdgeData>;
+/** Edges are drawn by EdgeLayer, not Svelte Flow; the z-index lifts highlighted ones above the rest. */
+export type GraphEdge = SceneEdge & { zIndex: number };
 
 export type Look = {
   dim: ReadonlySet<string>;
@@ -61,7 +62,8 @@ export type Viewport = { x: number; y: number; zoom: number };
 /** Leaf centres to apply; `fit` refits the view afterwards. */
 export type Layout = { centers: ReadonlyMap<string, Point>; fit: boolean };
 
-export type Placement = "fit" | { center: string } | { viewport: Viewport } | { top: string };
+/** Where the view starts once a graph is mounted. */
+export type ViewPlacement = "fit" | { center: string } | { viewport: Viewport } | { top: string };
 
 export type GraphControls = {
   fit: () => void;
@@ -98,7 +100,11 @@ export const has = (flags: number, flag: number) => (flags & flag) !== 0;
 export const edgeZ = { normal: 2, raised: 3 } as const;
 const nodeZ = 4;
 
-export const toFlowNodes = (scene: Pick<Scene, "nodes">, centers: ReadonlyMap<string, Point>, hidden: ReadonlySet<string>): GraphNode[] =>
+export const toFlowNodes = (
+  scene: Pick<Scene, "nodes">,
+  centers: ReadonlyMap<string, Point>,
+  hidden: ReadonlySet<string>,
+): GraphNode[] =>
   scene.nodes.map((node) => {
     const center = centers.get(node.id) ?? { x: 0, y: 0 };
     return {
@@ -117,28 +123,25 @@ export const toFlowNodes = (scene: Pick<Scene, "nodes">, centers: ReadonlyMap<st
 type Placed = Pick<Node, "id" | "position" | "width" | "height">;
 
 export const centersOf = (nodes: readonly Placed[]): Map<string, Point> =>
-  new Map(nodes.map((node) => [node.id, { x: node.position.x + (node.width ?? 0) / 2, y: node.position.y + (node.height ?? 0) / 2 }]));
+  new Map(
+    nodes.map((node) => [
+      node.id,
+      { x: node.position.x + (node.width ?? 0) / 2, y: node.position.y + (node.height ?? 0) / 2 },
+    ]),
+  );
 
 export const shapeOf = (node: GraphNode): Shape =>
   node.data.kind === "dot"
     ? { kind: "circle", radius: (node.width ?? 0) / 2 }
     : { kind: "rect", halfWidth: (node.width ?? 0) / 2, halfHeight: (node.height ?? 0) / 2 };
 
-export const toFlowEdges = (scene: Pick<Scene, "edges">): GraphEdge[] =>
-  scene.edges.map((edge) => ({
-    id: edge.id,
-    type: edge.data.route,
-    source: edge.source,
-    target: edge.target,
-    zIndex: edgeZ.normal,
-    data: edge.data,
-  }));
-
 const boundary = (shape: Shape, center: Point, toward: Point): Point => {
   const dx = toward.x - center.x;
   const dy = toward.y - center.y;
   const length = Math.hypot(dx, dy);
+
   if (length === 0) return center;
+
   const reach =
     shape.kind === "circle"
       ? shape.radius
@@ -147,6 +150,7 @@ const boundary = (shape: Shape, center: Point, toward: Point): Point => {
           dy === 0 ? Infinity : shape.halfHeight / Math.abs(dy / length),
         );
   const distance = Math.min(reach, length);
+
   return { x: center.x + (dx / length) * distance, y: center.y + (dy / length) * distance };
 };
 
@@ -157,6 +161,7 @@ export const arrowHead = (tip: Point, direction: Point, width: number) => {
   const length = 7 + width * 1.4;
   const half = 3.5 + width * 0.7;
   const base = { x: tip.x - direction.x * length, y: tip.y - direction.y * length };
+
   return {
     points: [
       tip,
@@ -184,6 +189,7 @@ const loopGeometry = (shape: Shape, center: Point, width: number) => {
   const first = { x: start.x + 26, y: start.y - lift };
   const second = { x: tip.x - 26, y: tip.y - lift };
   const arrow = arrowHead(tip, unit(second, tip), width);
+
   return {
     path: `M ${format(start)} C ${format(first)} ${format(second)} ${format(arrow.end)}`,
     arrow: arrow.points,
@@ -199,7 +205,9 @@ export const linkGeometry = (
   options: { width: number; bend: number; loop: boolean },
 ) => {
   const { width, bend } = options;
+
   if (options.loop) return loopGeometry(shapes.source, source, width);
+
   const dx = target.x - source.x;
   const dy = target.y - source.y;
   const length = Math.hypot(dx, dy) || 1;
@@ -210,6 +218,7 @@ export const linkGeometry = (
   const start = boundary(shapes.source, source, control);
   const tip = boundary(shapes.target, target, control);
   const arrow = arrowHead(tip, unit(control, tip), width);
+
   return {
     path: `M ${format(start)} Q ${format(control)} ${format(arrow.end)}`,
     arrow: arrow.points,
@@ -231,13 +240,21 @@ export const edgeTone = (flags: number): EdgeTone =>
         ? "dim"
         : "normal";
 
-export const edgePaint = (tone: EdgeTone, flags: number, data: EdgeData | undefined) => ({
-  stroke: { outgoing: "var(--edge-strong)", incoming: "var(--edge-in)", dim: "var(--dim)", normal: data?.color ?? "var(--edge)" }[tone],
-  label: { outgoing: "var(--edge-strong)", incoming: "var(--edge-in)", dim: "var(--dim-text)", normal: data?.labelColor ?? "var(--muted)" }[
-    tone
-  ],
-  width: tone === "outgoing" || tone === "incoming" ? 2.6 : has(flags, mark.path) ? 3 : (data?.width ?? 1.4),
-  dash: data?.line === "dashed" ? "6 4" : data?.line === "dotted" ? "2 3" : undefined,
+export const edgePaint = (tone: EdgeTone, flags: number, data: EdgeData) => ({
+  stroke: {
+    outgoing: "var(--edge-strong)",
+    incoming: "var(--edge-in)",
+    dim: "var(--dim)",
+    normal: data.color,
+  }[tone],
+  label: {
+    outgoing: "var(--edge-strong)",
+    incoming: "var(--edge-in)",
+    dim: "var(--dim-text)",
+    normal: data.labelColor,
+  }[tone],
+  width: tone === "outgoing" || tone === "incoming" ? 2.6 : has(flags, mark.path) ? 3 : data.width,
+  dash: data.line === "dashed" ? "6 4" : data.line === "dotted" ? "2 3" : undefined,
 });
 
 export const noShape: Shape = { kind: "circle", radius: 0 };

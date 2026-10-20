@@ -18,6 +18,7 @@ const placementOf = (snapshot: GraphSnapshot, path: string) =>
 describe("SvelteKit structure", () => {
   it("places files by SvelteKit entry points and import reachability", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
+
     expect(snapshot.framework).toBe("sveltekit");
     expect(sides(snapshot)).toEqual({
       client: [
@@ -52,6 +53,7 @@ describe("SvelteKit structure", () => {
 
   it("marks framework entry points and explains reachability with an import chain", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
+
     expect(placementOf(snapshot, "src/routes/api/+server.ts")?.entry).toBe("SvelteKit API endpoint");
     expect(placementOf(snapshot, "src/lib/format.ts")).toMatchObject({
       entry: null,
@@ -73,12 +75,19 @@ describe("SvelteKit structure", () => {
   it("lays lanes out left to right and gives every file its own position", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const xOf = (side: Side) =>
-      Math.max(...snapshot.modules.filter((module) => module.placement.side === side).map((module) => module.position.x));
+      Math.max(
+        ...snapshot.modules.filter((module) => module.placement.side === side).map((module) => module.position.x),
+      );
     const minXOf = (side: Side) =>
-      Math.min(...snapshot.modules.filter((module) => module.placement.side === side).map((module) => module.position.x));
+      Math.min(
+        ...snapshot.modules.filter((module) => module.placement.side === side).map((module) => module.position.x),
+      );
+
     expect(xOf("client")).toBeLessThan(minXOf("shared"));
     expect(xOf("shared")).toBeLessThan(minXOf("server"));
+
     const positions = new Set(snapshot.modules.map((module) => `${module.position.x},${module.position.y}`));
+
     expect(positions.size).toBe(snapshot.modules.length);
   });
 
@@ -88,12 +97,14 @@ describe("SvelteKit structure", () => {
     const crossGroup = snapshot.dependencyEdges.filter(
       (edge) => groupOf.get(edge.from) !== groupOf.get(edge.to),
     ).length;
+
     expect(snapshot.groupEdges.reduce((sum, edge) => sum + edge.count, 0)).toBe(crossGroup);
     expect(snapshot.groups.every((group) => group.moduleIds.length > 0)).toBe(true);
   });
 
   it("treats projects without SvelteKit as plain code", async () => {
     const snapshot = await scan(fixture("topology"));
+
     expect(snapshot.framework).toBeNull();
     expect(new Set(snapshot.modules.map((module) => module.placement.side))).toEqual(new Set(["code"]));
     expect(placementOf(snapshot, "src/c.ts")?.entry).toBe("Root file: no other file imports it");

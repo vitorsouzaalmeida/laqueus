@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getContext } from "svelte";
-  import type { Point } from "../layered";
+  import type { Point } from "../../src/model";
   import { type EdgeData, type GraphContext, edgePaint, edgeTone, graphContext, linkGeometry, noShape } from "../scene";
   import EdgeLine from "./EdgeLine.svelte";
 

@@ -22,6 +22,7 @@
       const cut = 9;
       return `${cut},1 ${w - cut},1 ${w - 1},${cut} ${w - 1},${h - cut} ${w - cut},${h - 1} ${cut},${h - 1} 1,${h - cut} 1,${cut}`;
     }
+
     return null;
   });
 </script>
