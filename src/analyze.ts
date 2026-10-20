@@ -2,18 +2,20 @@ import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import * as tsParser from "@typescript-eslint/parser";
-import type { ScopeManager } from "@typescript-eslint/scope-manager";
+import { type ScopeManager, analyze as analyzeScope } from "@typescript-eslint/scope-manager";
+import { parse } from "@typescript-eslint/typescript-estree";
 import type { TSESTree } from "@typescript-eslint/types";
+import { visitorKeys } from "@typescript-eslint/visitor-keys";
 import ignore, { type Ignore } from "ignore";
 import * as svelteParser from "svelte-eslint-parser";
 import {
   type FunctionLike,
   type VisitorKeys,
   allNodes,
+  indexTree,
   isFunction,
   locationOf,
   outerOfWrappers,
-  parentMap,
 } from "./ast";
 import { resolveLocalCalls } from "./calls";
 import { detectAreas } from "./areas";
@@ -125,16 +127,15 @@ const errorLine = (error: unknown): number | undefined => {
 };
 
 const parseScript = (absolute: string, code: string): Parsed => {
-  const output = tsParser.parseForESLint(code, {
+  const ast = parse(code, {
     filePath: absolute,
     loc: true,
     range: true,
-    sourceType: "module",
-    ecmaVersion: "latest",
-    ecmaFeatures: { jsx: !absolute.endsWith(".ts") },
+    jsx: !absolute.endsWith(".ts"),
+    jsDocParsingMode: "none",
   });
 
-  return { roots: output.ast.body, keys: output.visitorKeys, scope: output.scopeManager };
+  return { roots: ast.body, keys: visitorKeys, scope: analyzeScope(ast, { sourceType: "module" }) };
 };
 
 const parseSvelte = (absolute: string, code: string): Parsed => {
@@ -300,8 +301,7 @@ export const functionName = (fn: FunctionLike, parents: Parents): string => {
 };
 
 export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
-  const parents = parentMap(file.roots, file.keys);
-  const nodes = allNodes(file.roots, file.keys);
+  const { nodes, parents } = indexTree(file.roots, file.keys);
   const functionNodes = nodes.filter(isFunction);
   const moduleKey = moduleId(file.path);
   const measured = functionNodes.map((fn) => {
@@ -382,7 +382,12 @@ const validateRoot = async (input: string): Promise<Result<string>> => {
 
 const areaSides = new Set<Side>(["client", "shared", "server", "code"]);
 
-export const analyzeProject = async (input: string): Promise<Result<GraphSnapshot>> => {
+export type AnalysisCache = Map<string, { root: string; code: string; result: Result<FileAnalysis, Diagnostic> }>;
+
+export const analyzeProject = async (
+  input: string,
+  cache: AnalysisCache = new Map(),
+): Promise<Result<GraphSnapshot>> => {
   const started = performance.now();
   const rootResult = await validateRoot(input);
 
@@ -392,14 +397,27 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
   const files = await discoverSourceFiles(root);
   const relative = (absolute: string) => toPosix(path.relative(root, absolute));
 
+  const analyzeCached = (absolute: string, code: string): Result<FileAnalysis, Diagnostic> => {
+    const cached = cache.get(absolute);
+
+    if (cached?.root === root && cached.code === code) return cached.result;
+
+    const result = analyzeSource(root, absolute, code);
+    cache.set(absolute, { root, code, result });
+
+    return result;
+  };
+
   const results = await Promise.all(
     files.map(async (absolute): Promise<Result<FileAnalysis, Diagnostic>> => {
       const code = await readFile(absolute, "utf8").catch((error: unknown) => error);
       return typeof code === "string"
-        ? analyzeSource(root, absolute, code)
+        ? analyzeCached(absolute, code)
         : err({ file: relative(absolute), kind: "parse-error", message: errorMessage(code) });
     }),
   );
+  const current = new Set(files);
+  [...cache.keys()].filter((absolute) => !current.has(absolute)).forEach((absolute) => cache.delete(absolute));
   const analyses = results.flatMap((result) => (result.ok ? [result.value] : []));
   const parseDiagnostics = results.flatMap((result) => (result.ok ? [] : [result.error]));
 

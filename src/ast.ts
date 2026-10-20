@@ -55,29 +55,81 @@ const transparentWrappers = new Set([
 const isNode = (value: unknown): value is TSESTree.Node =>
   typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
 
-const asNodes = (value: unknown): TSESTree.Node[] =>
-  Array.isArray(value) ? value.filter(isNode) : isNode(value) ? [value] : [];
+const isWalkable = (value: unknown): value is TSESTree.Node => isNode(value) && !typeOnlyNodes.has(value.type);
 
 /** The one generic read: the walker follows the parser's visitor keys, so it cannot name the fields it visits. */
-export const children = (node: TSESTree.Node, keys: VisitorKeys): TSESTree.Node[] =>
-  (keys[node.type] ?? Object.keys(node))
-    .filter((key) => !skippedKeys.has(key))
-    .flatMap((key) => asNodes(Reflect.get(node, key)))
-    .filter((child) => !typeOnlyNodes.has(child.type));
+export const children = (node: TSESTree.Node, keys: VisitorKeys): TSESTree.Node[] => {
+  const found: TSESTree.Node[] = [];
+
+  for (const key of keys[node.type] ?? Object.keys(node)) {
+    if (skippedKeys.has(key)) continue;
+
+    const value: unknown = Reflect.get(node, key);
+
+    if (Array.isArray(value)) {
+      for (const item of value) if (isWalkable(item)) found.push(item);
+    } else if (isWalkable(value)) {
+      found.push(value);
+    }
+  }
+
+  return found;
+};
+
+type Visit = (node: TSESTree.Node, parent: TSESTree.Node | undefined) => void;
+
+const never = () => false;
+
+const walk = (
+  start: readonly TSESTree.Node[],
+  parent: TSESTree.Node | undefined,
+  keys: VisitorKeys,
+  stopAt: (node: TSESTree.Node) => boolean,
+  visit: Visit,
+) => {
+  const nodes = start.toReversed();
+  const parents = nodes.map(() => parent);
+
+  for (let node = nodes.pop(); node !== undefined; node = nodes.pop()) {
+    visit(node, parents.pop());
+
+    if (stopAt(node)) continue;
+
+    for (const child of children(node, keys).toReversed()) {
+      nodes.push(child);
+      parents.push(node);
+    }
+  }
+};
 
 export const descendants = (
   node: TSESTree.Node,
   keys: VisitorKeys,
-  stopAt: (node: TSESTree.Node) => boolean = () => false,
-): TSESTree.Node[] =>
-  children(node, keys).flatMap((child) => (stopAt(child) ? [child] : [child, ...descendants(child, keys, stopAt)]));
+  stopAt: (node: TSESTree.Node) => boolean = never,
+): TSESTree.Node[] => {
+  const found: TSESTree.Node[] = [];
+  walk(children(node, keys), node, keys, stopAt, (child) => found.push(child));
+  return found;
+};
+
+export const indexTree = (
+  roots: readonly TSESTree.Node[],
+  keys: VisitorKeys,
+): { nodes: TSESTree.Node[]; parents: Map<TSESTree.Node, TSESTree.Node> } => {
+  const nodes: TSESTree.Node[] = [];
+  const parents = new Map<TSESTree.Node, TSESTree.Node>();
+
+  walk(roots, undefined, keys, never, (node, parent) => {
+    nodes.push(node);
+    if (parent) parents.set(node, parent);
+  });
+
+  return { nodes, parents };
+};
 
 /** Every node under the roots, roots included. */
 export const allNodes = (roots: readonly TSESTree.Node[], keys: VisitorKeys): TSESTree.Node[] =>
-  roots.flatMap((root) => [root, ...descendants(root, keys)]);
-
-export const parentMap = (roots: readonly TSESTree.Node[], keys: VisitorKeys): Map<TSESTree.Node, TSESTree.Node> =>
-  new Map(allNodes(roots, keys).flatMap((parent) => children(parent, keys).map((child) => [child, parent] as const)));
+  indexTree(roots, keys).nodes;
 
 export const isFunction = (node: TSESTree.Node): node is FunctionLike => functionTypes.has(node.type);
 
