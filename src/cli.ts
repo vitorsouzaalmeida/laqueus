@@ -4,7 +4,7 @@ import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { analyzeProject, functionLogic } from "./analyze";
+import { type AnalysisCache, analyzeProject, functionLogic } from "./analyze";
 import { type GraphSnapshot, type Result, err, errorMessage, ok } from "./model";
 import { type ServerOptions, startServer } from "./server";
 
@@ -112,7 +112,8 @@ export const main = async (
   }
 
   console.log(`Scanning ${options.value.root} ...`);
-  const scan = () => analyzeProject(options.value.root);
+  const cache: AnalysisCache = new Map();
+  const scan = () => analyzeProject(options.value.root, cache);
   const initial = await scan();
 
   if (!initial.ok) {
