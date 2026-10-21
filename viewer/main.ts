@@ -7,22 +7,8 @@ import { type ColorMode, type FunctionLayout, bucketLabels, mapPositions, sidesP
 import { type Centers, type GraphView, createGraphView } from "./graph-view.svelte";
 import { layered } from "./layered";
 import { functionsLook, neighbourhoodLook, pathLook } from "./looks";
-import {
-  type Grouping,
-  type MapView,
-  type RouteView,
-  type Tree,
-  ancestry,
-  buildRouteView,
-  buildTree,
-  buildView,
-  deepestNode,
-  isTraySide,
-  pathView,
-  shortestPath,
-  traySides,
-  viewMode,
-} from "./map";
+import { type Grouping, type Tree, ancestry, buildTree, deepestNode, isTraySide, traySides } from "../src/tree";
+import { type MapView, type RouteView, buildRouteView, buildView, pathView, shortestPath, viewMode } from "./map";
 import {
   type PanelContext,
   callEdgePanel,

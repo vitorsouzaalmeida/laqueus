@@ -1,24 +1,5 @@
-import type { Area, GraphSnapshot, ModuleNode, Route, Side } from "../src/model";
-
-export type Grouping = "areas" | "folders";
-export type MapOptions = { grouping: Grouping; tray: ReadonlySet<Side> };
-
-export type TreeNode = {
-  id: string;
-  kind: "root" | "side" | "area" | "subarea" | "folder";
-  label: string;
-  side: Side | null;
-  parent: string | null;
-  children: string[];
-  moduleIds: string[];
-  area: Area | null;
-};
-
-export type Tree = {
-  root: TreeNode;
-  nodes: Map<string, TreeNode>;
-  pathOf: Map<string, string[]>;
-};
+import type { GraphSnapshot, ModuleNode, Route, Side } from "../src/model";
+import { type Tree, type TreeNode, breadthFirst, deepestNode, ancestry, nodeStats, outgoingImports } from "../src/tree";
 
 export type MapItem = {
   id: string;
@@ -41,120 +22,7 @@ export type MapView = {
   links: MapLink[];
 };
 
-export const mainSides: readonly Side[] = ["client", "shared", "server", "code"];
-export const traySides: readonly Side[] = ["unreached", "test", "tooling"];
 export const fileViewLimit = 80;
-
-export const isTraySide = (value: unknown): value is Side => traySides.some((side) => side === value);
-
-const folderLabel = (directory: string) => (directory === "." ? "(project root)" : directory);
-
-export const buildTree = (data: GraphSnapshot, options: MapOptions): Tree => {
-  const modules = data.modules;
-  const visibleSides = data.lanes
-    .map((lane) => lane.side)
-    .filter((side) => mainSides.includes(side) || options.tray.has(side));
-  const laneLabel = new Map(data.lanes.map((lane) => [lane.side, lane.label]));
-  const areaById = new Map(data.areas.map((area) => [area.id, area]));
-  const nodes = new Map<string, TreeNode>();
-  const pathOf = new Map<string, string[]>();
-
-  const add = (node: TreeNode) => {
-    nodes.set(node.id, node);
-
-    const parent = node.parent ? nodes.get(node.parent) : undefined;
-    if (parent) parent.children.push(node.id);
-  };
-
-  const root: TreeNode = {
-    id: "root",
-    kind: "root",
-    label: data.name,
-    side: null,
-    parent: null,
-    children: [],
-    moduleIds: modules.filter((module) => visibleSides.includes(module.placement.side)).map((module) => module.id),
-    area: null,
-  };
-
-  add(root);
-
-  visibleSides.forEach((side) => {
-    const members = modules.filter((module) => module.placement.side === side);
-    const sideId = `side:${side}`;
-
-    add({
-      id: sideId,
-      kind: "side",
-      label: laneLabel.get(side) ?? side,
-      side,
-      parent: "root",
-      children: [],
-      moduleIds: members.map((module) => module.id),
-      area: null,
-    });
-
-    const useAreas = options.grouping === "areas" && mainSides.includes(side);
-    const keyOf = (module: ModuleNode) => (useAreas && module.areaId ? module.areaId : module.groupId);
-    const groups = [...new Set(members.map(keyOf))];
-
-    groups.forEach((key) => {
-      const groupMembers = members.filter((module) => keyOf(module) === key);
-      const area = useAreas ? (areaById.get(key) ?? null) : null;
-      const group = data.groups.find((candidate) => candidate.id === key);
-      const groupId = `${area ? "area" : "folder"}:${side}:${key}`;
-
-      add({
-        id: groupId,
-        kind: area ? "area" : "folder",
-        label: area ? area.label : folderLabel(group?.directory ?? key),
-        side,
-        parent: sideId,
-        children: [],
-        moduleIds: groupMembers.map((module) => module.id),
-        area,
-      });
-
-      const subKeys = area ? [...new Set(groupMembers.map((module) => module.subAreaId ?? ""))] : [];
-      const subdivide = subKeys.length > 1 && subKeys.every((subKey) => subKey !== "");
-
-      if (subdivide) {
-        subKeys.forEach((subKey) => {
-          const subMembers = groupMembers.filter((module) => module.subAreaId === subKey);
-          const subArea = areaById.get(subKey) ?? null;
-          const subId = `sub:${side}:${subKey}`;
-
-          add({
-            id: subId,
-            kind: "subarea",
-            label: subArea?.label ?? subKey,
-            side,
-            parent: groupId,
-            children: [],
-            moduleIds: subMembers.map((module) => module.id),
-            area: subArea,
-          });
-
-          subMembers.forEach((module) => pathOf.set(module.id, ["root", sideId, groupId, subId]));
-        });
-      } else {
-        groupMembers.forEach((module) => pathOf.set(module.id, ["root", sideId, groupId]));
-      }
-    });
-  });
-
-  return { root, nodes, pathOf };
-};
-
-export const ancestry = (tree: Tree, nodeId: string): string[] => {
-  const node = tree.nodes.get(nodeId);
-  return node?.parent ? [...ancestry(tree, node.parent), nodeId] : [nodeId];
-};
-
-export const deepestNode = (tree: Tree, moduleId: string) => {
-  const path = tree.pathOf.get(moduleId);
-  return path ? path[path.length - 1] : undefined;
-};
 
 export const viewMode = (node: TreeNode): "cards" | "files" =>
   node.kind === "root" || (node.children.length > 0 && node.moduleIds.length > fileViewLimit) ? "cards" : "files";
@@ -166,16 +34,8 @@ const lookup = (data: GraphSnapshot): Lookup => {
   return { module: (id) => modules.get(id) };
 };
 
-const statsOf = (moduleIds: readonly string[], find: Lookup) => {
-  const members = moduleIds.flatMap((id) => find.module(id) ?? []);
-  const scores = members.flatMap((module) => (module.metrics.maxCC === null ? [] : [module.metrics.maxCC]));
-
-  return {
-    entries: members.filter((module) => module.placement.entry !== null).length,
-    maxCC: scores.length > 0 ? Math.max(...scores) : null,
-    cyclic: members.some((module) => module.metrics.cycleGroup !== null),
-  };
-};
+const statsOf = (moduleIds: readonly string[], find: Lookup) =>
+  nodeStats(moduleIds.flatMap((id) => find.module(id) ?? []));
 
 const fileItem = (module: ModuleNode, id = module.id, column = 0): MapItem => ({
   id,
@@ -263,47 +123,9 @@ export type RouteView = MapView & {
   reach: Record<"client" | "server", string[]>;
 };
 
-const breadthFirst = (starts: readonly string[], next: (id: string) => readonly string[]) => {
-  const visit = (
-    frontier: readonly string[],
-    seen: Map<string, { depth: number; origin: string | null }>,
-  ): typeof seen => {
-    if (frontier.length === 0) return seen;
-
-    const discovered = frontier.flatMap((id) =>
-      next(id)
-        .filter((target) => !seen.has(target))
-        .map((target) => {
-          const parent = seen.get(id);
-          const depth = (parent?.depth ?? 0) + 1;
-
-          return [
-            target,
-            {
-              depth,
-              origin: depth === 1 ? target : (parent?.origin ?? null),
-            },
-          ] as const;
-        }),
-    );
-    const fresh = [...new Map(discovered.toReversed())];
-
-    fresh.forEach(([target, info]) => seen.set(target, info));
-
-    return visit(
-      fresh.map(([target]) => target),
-      seen,
-    );
-  };
-  return visit(starts, new Map(starts.map((id) => [id, { depth: 0, origin: null }])));
-};
-
 export const buildRouteView = (data: GraphSnapshot, tree: Tree, route: Route): RouteView => {
   const find = lookup(data);
-  const outgoing = data.dependencyEdges.reduce(
-    (map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]),
-    new Map<string, string[]>(),
-  );
+  const outgoing = outgoingImports(data);
 
   /** Files three levels deep (root › side › group) are summarised by their group. */
   const groupKey = (module: ModuleNode) =>
@@ -387,10 +209,7 @@ export const buildRouteView = (data: GraphSnapshot, tree: Tree, route: Route): R
 };
 
 export const shortestPath = (data: GraphSnapshot, from: string, to: string): string[] | null => {
-  const outgoing = data.dependencyEdges.reduce(
-    (map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]),
-    new Map<string, string[]>(),
-  );
+  const outgoing = outgoingImports(data);
 
   const search = (frontier: readonly string[], parents: Map<string, string | null>): Map<string, string | null> => {
     if (frontier.length === 0 || parents.has(to)) return parents;
