@@ -167,9 +167,7 @@ describe("laqueus list", () => {
       ]),
     );
     expect(result.parts.map((p: { part: string }) => p.part)).not.toContain("test");
-    expect(result.hidden).toEqual(
-      expect.arrayContaining([expect.objectContaining({ part: "test", kind: "side" })]),
-    );
+    expect(result.hidden).toEqual(expect.arrayContaining([expect.objectContaining({ part: "test", kind: "side" })]));
   });
 
   it("lists the areas inside a side", async () => {
@@ -177,9 +175,7 @@ describe("laqueus list", () => {
     const result = JSON.parse(stdout);
 
     expect(result.path).toEqual(["sveltekit-sides", "Server only"]);
-    expect(result.parts).toEqual(
-      expect.arrayContaining([expect.objectContaining({ part: "server/server-src" })]),
-    );
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ part: "server/server-src" })]));
     expect(logs.at(-1)).toContain("laqueus export <part>");
   });
 
@@ -187,9 +183,7 @@ describe("laqueus list", () => {
     const { stdout, logs } = await listed(["server/server-src"]);
     const result = JSON.parse(stdout);
 
-    expect(result.files).toEqual(
-      expect.arrayContaining([expect.objectContaining({ path: "src/lib/server/db.ts" })]),
-    );
+    expect(result.files).toEqual(expect.arrayContaining([expect.objectContaining({ path: "src/lib/server/db.ts" })]));
     expect(result).not.toHaveProperty("parts");
     expect(logs.at(-1)).toContain("laqueus export server/server-src");
   });
