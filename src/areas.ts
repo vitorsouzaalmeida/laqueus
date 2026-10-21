@@ -250,8 +250,11 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Depend
       (counts, edge) => {
         const from = set.has(edge.from);
         const to = set.has(edge.to);
+        const between = position.has(edge.from) && position.has(edge.to) && edge.from !== edge.to;
 
-        return from || to ? { inside: counts.inside + (from && to ? 1 : 0), touching: counts.touching + 1 } : counts;
+        return between && (from || to)
+          ? { inside: counts.inside + (from && to ? 1 : 0), touching: counts.touching + 1 }
+          : counts;
       },
       { inside: 0, touching: 0 },
     );

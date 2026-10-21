@@ -100,7 +100,7 @@ describe("SvelteKit projects", () => {
       .map((fn) => ({ name: fn.name, line: fn.location.line, complexity: fn.complexity }));
 
     expect(widget).toEqual([
-      { name: "label", line: 2, complexity: 2 },
+      { name: "label", line: 2, complexity: 1 },
       { name: "click", line: 8, complexity: 1 },
     ]);
   });

@@ -2,7 +2,7 @@ import type { TSESTree } from "@typescript-eslint/types";
 import { type VisitorKeys, descendants, isFunction } from "./ast";
 import type { DependencyEdge, FunctionNode, ModuleMetrics } from "./model";
 
-const logicalAssignments = new Set(["&&=", "||=", "??="]);
+const logicalAssignments = new Set(["&&=", "||="]);
 
 export const decisionWeight = (node: TSESTree.Node): number => {
   switch (node.type) {
@@ -14,16 +14,13 @@ export const decisionWeight = (node: TSESTree.Node): number => {
     case "DoWhileStatement":
     case "CatchClause":
     case "ConditionalExpression":
-    case "LogicalExpression":
-    case "AssignmentPattern":
       return 1;
+    case "LogicalExpression":
+      return node.operator === "??" ? 0 : 1;
     case "SwitchCase":
       return node.test ? 1 : 0;
     case "AssignmentExpression":
       return logicalAssignments.has(node.operator) ? 1 : 0;
-    case "MemberExpression":
-    case "CallExpression":
-      return node.optional ? 1 : 0;
     default:
       return 0;
   }
@@ -138,11 +135,17 @@ export const moduleMetrics = (
   moduleIds: readonly string[],
   edges: readonly DependencyEdge[],
   functionsByModule: ReadonlyMap<string, readonly FunctionNode[]>,
+  tests: ReadonlySet<string> = new Set(),
 ): Map<string, ModuleMetrics> => {
   const cycles = cycleGroups(moduleIds, edges);
   const islands = weaklyConnectedComponents(moduleIds, edges);
   const external = edges.filter((edge) => edge.from !== edge.to);
-  const importers = groupBy(external.map((edge) => [edge.to, edge.from] as const));
+  const importers = groupBy(
+    external.filter((edge) => !tests.has(edge.from)).map((edge) => [edge.to, edge.from] as const),
+  );
+  const testImporters = groupBy(
+    external.filter((edge) => tests.has(edge.from)).map((edge) => [edge.to, edge.from] as const),
+  );
   const imported = groupBy(external.map((edge) => [edge.from, edge.to] as const));
 
   return new Map(
@@ -154,6 +157,7 @@ export const moduleMetrics = (
         id,
         {
           fanIn: importers.get(id)?.size ?? 0,
+          testFanIn: testImporters.get(id)?.size ?? 0,
           fanOut: imported.get(id)?.size ?? 0,
           maxCC: scores.length > 0 ? scores.reduce((max, score) => Math.max(max, score), 0) : null,
           meanCC: scores.length > 0 ? Math.round((total / scores.length) * 100) / 100 : null,
@@ -164,4 +168,33 @@ export const moduleMetrics = (
       ];
     }),
   );
+};
+
+const binomial = (n: number, k: number): number =>
+  k === 0 ? 1 : k > n ? 0 : Array.from({ length: k }, (_, i) => (n - i) / (i + 1)).reduce((a, b) => a * b, 1);
+
+const combinations = <T>(items: readonly T[], size: number): T[][] =>
+  size === 0
+    ? [[]]
+    : items.flatMap((item, index) => combinations(items.slice(index + 1), size - 1).map((rest) => [item, ...rest]));
+
+export const largestCut = 3;
+const cutBudget = 20000;
+
+export const smallestCuts = (nodes: readonly string[], edges: readonly DependencyEdge[]): DependencyEdge[][] => {
+  const search = (size: number): DependencyEdge[][] => {
+    if (size > largestCut || size > edges.length || binomial(edges.length, size) > cutBudget) return [];
+
+    const cuts = combinations(edges, size).filter(
+      (cut) =>
+        cycleGroups(
+          nodes,
+          edges.filter((edge) => !cut.includes(edge)),
+        ).size === 0,
+    );
+
+    return cuts.length > 0 ? cuts : search(size + 1);
+  };
+
+  return search(1);
 };

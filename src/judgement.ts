@@ -59,4 +59,10 @@ export const cycleSeverity = (size: number, edgeCount: number): CycleSeverity =>
   return { severity, edges: edgeCount, density };
 };
 
-export const isHub = (fanInRank: number, fanOutRank: number): boolean => fanInRank >= 75 && fanOutRank >= 75;
+export const hubRank = 75;
+export const hubFloor = 5;
+
+export type Ranked = { value: number; rank: number };
+
+export const isHub = (fanIn: Ranked, fanOut: Ranked): boolean =>
+  [fanIn, fanOut].every((measure) => measure.rank >= hubRank && measure.value >= hubFloor);

@@ -118,15 +118,22 @@ describe("cycleSeverity", () => {
   });
 });
 
+const at = (rank: number, value = 10) => ({ rank, value });
+
 describe("isHub", () => {
-  it("is true when both ranks are at or above 75", () => {
-    expect(isHub(75, 75)).toBe(true);
-    expect(isHub(90, 80)).toBe(true);
+  it("is true when both ranks are at or above 75 and both counts reach the floor", () => {
+    expect(isHub(at(75), at(75))).toBe(true);
+    expect(isHub(at(90, 5), at(80, 5))).toBe(true);
   });
 
   it("is false when either rank is below 75", () => {
-    expect(isHub(74, 90)).toBe(false);
-    expect(isHub(90, 74)).toBe(false);
-    expect(isHub(50, 50)).toBe(false);
+    expect(isHub(at(74), at(90))).toBe(false);
+    expect(isHub(at(90), at(74))).toBe(false);
+    expect(isHub(at(50), at(50))).toBe(false);
+  });
+
+  it("is false when either count is below the floor of 5, whatever the rank", () => {
+    expect(isHub(at(99, 4), at(99, 20))).toBe(false);
+    expect(isHub(at(99, 20), at(99, 4))).toBe(false);
   });
 });

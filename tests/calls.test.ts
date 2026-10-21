@@ -65,11 +65,11 @@ class Service {
 
   it("only draws provable same-file calls", () => {
     expect(callPairs("calls.ts", code)).toEqual([
-      "<anonymous>@30 -> b",
       "Service.make -> Service.build",
       "Service.run -> Service.step",
       "a -> b",
       "a -> helper",
+      "forEach callback -> b",
       "helper -> b",
       "inner -> b",
       "later -> Service.step",

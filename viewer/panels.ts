@@ -477,6 +477,7 @@ export const modulePanel = (
       "div",
       { class: "metrics" },
       metric("Fan-in", metrics.fanIn),
+      metric("Test fan-in", metrics.testFanIn),
       metric("Fan-out", metrics.fanOut),
       metric("Functions", metrics.functionCount),
       metric("Max CC", formatCC(metrics.maxCC)),

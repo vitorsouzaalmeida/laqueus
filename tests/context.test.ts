@@ -98,11 +98,10 @@ describe("context pages", () => {
   it("adds band lines to every file page", async () => {
     const snapshot = await scan(fixture("topology"));
     const { pages } = pagesOf(snapshot);
-    const population = snapshot.modules.length;
-
     snapshot.modules.forEach((module) => {
       const content = pages.get(`${module.path}.md`) ?? "";
-      expect(content).toContain(`of ${population} files)`);
+      const population = snapshot.modules.filter((other) => other.placement.side === module.placement.side).length;
+      expect(content).toContain(`of ${population} ${module.placement.side} files)`);
       expect(content).toContain("- Fan-in band:");
       expect(content).toContain("- Fan-out band:");
       expect(content).toContain("- Hub:");
@@ -160,6 +159,37 @@ describe("context pages", () => {
 
     expect(index).toContain("## Judgement bands");
     expect(index).toContain("- Hubs:");
+  });
+
+  it("writes a findings page and an areas page", async () => {
+    const { pages } = pagesOf(await scan(fixture("coupling")));
+    const findings = pages.get("_findings.md") ?? "";
+    const areas = pages.get("_areas.md") ?? "";
+
+    expect(findings.split("\n")[0]).toMatch(
+      /^Findings: 0 functions in the high CC band · 0 hubs · 0 cycles · 1 area cycle$/,
+    );
+    expect(findings).toContain("## CC distribution");
+    expect(findings).toContain("- Median CC: 1");
+    expect(findings).toContain("Area cycle #1 (2 areas): `src/x`, `src/y`");
+    expect(areas).toContain("## Stable areas depending on less stable ones");
+    expect(areas).toContain("| `src/x` | 0.33 | `src/y` | 0.50 | 1 |");
+  });
+
+  it("lists the imports inside each cycle and the smallest cut", async () => {
+    const { pages } = pagesOf(await scan(fixture("topology")));
+    const cycles = pages.get("_cycles.md") ?? "";
+
+    expect(cycles).toContain("- Smallest cut: 1 import, 2 choices");
+    expect(cycles).toContain("  - Choice 1: `src/a.ts` → `src/b.ts` (line 1: `b`)");
+  });
+
+  it("shows barrels and imports through them on file pages", async () => {
+    const { pages } = pagesOf(await scan(fixture("barrels")));
+
+    expect(pages.get("src/lib/index.ts.md")).toContain("- Barrel: yes");
+    expect(pages.get("src/main.ts.md")).toContain("- `src/lib/alpha.ts` (line 1, via `src/lib/index.ts`)");
+    expect(pages.get("src/lib/alpha.ts.md")).toContain("- Test fan-in: 1");
   });
 
   it("refuses a source tree whose pages would overwrite generated ones", async () => {
