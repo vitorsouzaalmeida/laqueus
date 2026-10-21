@@ -65,7 +65,7 @@ describe("export facts", () => {
     const facts = createFacts(snapshot, null);
     const a = snapshot.modules.find((module) => module.path === "src/a.ts");
 
-    expect(facts.cycles).toEqual([{ number: 1, files: ["src/a.ts", "src/b.ts"] }]);
+    expect(facts.cycles).toMatchObject([{ number: 1, files: ["src/a.ts", "src/b.ts"] }]);
     expect(a && facts.file(a).cycle).toBe(1);
   });
 

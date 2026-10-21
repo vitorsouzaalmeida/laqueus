@@ -29,20 +29,13 @@ function choose(x: number) {
 function guarded() {
   try { return JSON.parse("{}"); } catch { return null; } finally { void 0; }
 }
-function logical(a: boolean, b: boolean, c?: number) {
-  return (a && b) || (c ?? 1);
+function logical(a: boolean, b: boolean, c: boolean) {
+  return (a && b) || c;
 }
-function assigns(o: { a?: number; b?: number; c?: number; d: number }) {
+function assigns(o: { a?: number; b?: number; d: number }) {
   o.a ||= 1;
   o.b &&= 2;
-  o.c ??= 3;
   o.d += 1;
-}
-function defaults(a = 1, { b = 2 } = {}) {
-  return a + b;
-}
-function chains(a: any) {
-  return a?.b?.c() ?? a?.();
 }
 class Shapes {
   area(x: number | null) { return x === null ? 0 : x * x; }
@@ -61,6 +54,28 @@ const optionalOnly = (v?: number) => v!;
 const obj = {
   method(flag: boolean) { return flag ? 1 : 2; },
 };
+`;
+
+const undefinedChecks = `
+function nullish(a: boolean, b: boolean, c?: number) {
+  return (a && b) || (c ?? 1);
+}
+function nullishAssign(o: { c?: number }) {
+  o.c ??= 3;
+}
+function defaults(a = 1, { b = 2 } = {}) {
+  return a + b;
+}
+function chains(a: any) {
+  return a?.b?.c() ?? a?.();
+}
+function telemetry(attributes: Record<string, string>, context?: { userId?: string; teamId?: string }) {
+  setAttributeIfPresent(attributes, "userId", context?.userId);
+  setAttributeIfPresent(attributes, "teamId", context?.teamId);
+}
+function ternary(context?: { userId?: string }) {
+  return context ? context.userId : undefined;
+}
 `;
 
 const eslintScores = (code: string) =>
@@ -87,7 +102,7 @@ describe("cyclomatic complexity", () => {
   const functions = analyzeCode("cases.ts", cases).functions;
   const score = (name: string) => functions.find((fn) => fn.name === name)?.complexity;
 
-  it("matches the documented classic scores", () => {
+  it("matches the documented scores", () => {
     expect({
       a: score("a"),
       b: score("b"),
@@ -97,8 +112,6 @@ describe("cyclomatic complexity", () => {
       guarded: score("guarded"),
       logical: score("logical"),
       assigns: score("assigns"),
-      defaults: score("defaults"),
-      chains: score("chains"),
       area: score("Shapes.area"),
       arrow: score("Shapes.arrow"),
       outer: score("outer"),
@@ -112,10 +125,8 @@ describe("cyclomatic complexity", () => {
       loops: 6,
       choose: 3,
       guarded: 2,
-      logical: 4,
-      assigns: 4,
-      defaults: 4,
-      chains: 5,
+      logical: 3,
+      assigns: 3,
       area: 2,
       arrow: 2,
       outer: 2,
@@ -126,8 +137,21 @@ describe("cyclomatic complexity", () => {
   });
 
   it("scores nested callbacks separately from their parent", () => {
-    const callback = functions.find((fn) => fn.name.startsWith("<anonymous>@"));
-    expect(callback).toMatchObject({ complexity: 2 });
+    expect(functions.find((fn) => fn.name === "outer › xs.map callback")).toMatchObject({ complexity: 2 });
+  });
+
+  it("adds nothing for checks of undefined values, but counts ternaries", () => {
+    const checks = analyzeCode("checks.ts", undefinedChecks).functions;
+    const scoreOf = (name: string) => checks.find((fn) => fn.name === name)?.complexity;
+
+    expect({
+      nullish: scoreOf("nullish"),
+      nullishAssign: scoreOf("nullishAssign"),
+      defaults: scoreOf("defaults"),
+      chains: scoreOf("chains"),
+      telemetry: scoreOf("telemetry"),
+      ternary: scoreOf("ternary"),
+    }).toEqual({ nullish: 3, nullishAssign: 1, defaults: 1, chains: 1, telemetry: 1, ternary: 2 });
   });
 
   it("agrees with ESLint's complexity rule", () => {
@@ -149,7 +173,7 @@ describe("cyclomatic complexity", () => {
 <p>{pick(1) ? "yes" : "no"}</p>`,
     ).functions;
     expect(svelte.map((fn) => ({ name: fn.name, complexity: fn.complexity, line: fn.location.line }))).toEqual([
-      { name: "pick", complexity: 3, line: 2 },
+      { name: "pick", complexity: 2, line: 2 },
     ]);
   });
 });

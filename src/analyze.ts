@@ -16,7 +16,9 @@ import {
   isFunction,
   locationOf,
   outerOfWrappers,
+  unwrapExpression,
 } from "./ast";
+import { type ExportTable, type Reexport, barrelResolver } from "./barrels";
 import { resolveLocalCalls } from "./calls";
 import { detectAreas } from "./areas";
 import { buildLogic } from "./logic";
@@ -72,11 +74,12 @@ export type ParsedFile = {
 
 type Parsed = Pick<ParsedFile, "roots" | "keys" | "scope">;
 
-type ImportReference = { specifier: string; location: Location };
+type ImportReference = { specifier: string; location: Location; names: string[] };
 
 type FileAnalysis = {
   path: string;
   imports: ImportReference[];
+  exports: ExportTable;
   functions: FunctionNode[];
   calls: CallEdge[];
 };
@@ -210,11 +213,166 @@ const importSpecifier = (node: TSESTree.Node): string | undefined => {
   }
 };
 
+const nameOf = (node: TSESTree.Identifier | TSESTree.StringLiteral) =>
+  node.type === "Identifier" ? node.name : node.value;
+
+const importedNames = (node: TSESTree.Node): string[] => {
+  switch (node.type) {
+    case "ImportDeclaration":
+      return node.specifiers.flatMap((specifier) => {
+        if (specifier.type === "ImportDefaultSpecifier") return ["default"];
+        if (specifier.type === "ImportNamespaceSpecifier") return ["*"];
+        return specifier.importKind === "type" ? [] : [nameOf(specifier.imported)];
+      });
+    case "ExportNamedDeclaration":
+      return node.specifiers.flatMap((specifier) => (specifier.exportKind === "type" ? [] : [nameOf(specifier.local)]));
+    default:
+      return [];
+  }
+};
+
 export const extractImports = (file: ParsedFile, nodes: readonly TSESTree.Node[]): ImportReference[] =>
   nodes.flatMap((node) => {
     const specifier = importSpecifier(node);
-    return specifier === undefined ? [] : [{ specifier, location: locationOf(node, file.path) }];
+    const names = importedNames(node);
+
+    return specifier === undefined
+      ? []
+      : [{ specifier, location: locationOf(node, file.path), names: names.length === 0 ? ["*"] : names }];
   });
+
+const typeOnlyStatements = new Set([
+  "TSTypeAliasDeclaration",
+  "TSInterfaceDeclaration",
+  "TSDeclareFunction",
+  "TSModuleDeclaration",
+  "EmptyStatement",
+]);
+
+const patternNames = (node: TSESTree.Node | null): string[] => {
+  switch (node?.type) {
+    case "Identifier":
+      return [node.name];
+    case "ObjectPattern":
+      return node.properties.flatMap((property) =>
+        patternNames(property.type === "RestElement" ? property.argument : property.value),
+      );
+    case "ArrayPattern":
+      return node.elements.flatMap(patternNames);
+    case "AssignmentPattern":
+      return patternNames(node.left);
+    case "RestElement":
+      return patternNames(node.argument);
+    default:
+      return [];
+  }
+};
+
+const declaredNames = (declaration: TSESTree.NamedExportDeclarations): string[] => {
+  switch (declaration.type) {
+    case "VariableDeclaration":
+      return declaration.declarations.flatMap((declarator) => patternNames(declarator.id));
+    case "FunctionDeclaration":
+    case "ClassDeclaration":
+    case "TSEnumDeclaration":
+      return declaration.id ? [declaration.id.name] : [];
+    default:
+      return [];
+  }
+};
+
+type Exports = { own: boolean; names: string[]; reexports: Reexport[]; stars: string[] };
+
+export const extractExports = (file: ParsedFile): ExportTable => {
+  const statements = file.roots;
+  const imported = new Map(
+    statements.flatMap((statement) =>
+      statement.type === "ImportDeclaration" && statement.importKind !== "type"
+        ? statement.specifiers.flatMap((specifier) => {
+            const source = statement.source.value;
+
+            if (specifier.type === "ImportDefaultSpecifier")
+              return [[specifier.local.name, { specifier: source, imported: "default" }] as const];
+            if (specifier.type === "ImportNamespaceSpecifier")
+              return [[specifier.local.name, { specifier: source, imported: "*" }] as const];
+
+            return specifier.importKind === "type"
+              ? []
+              : [[specifier.local.name, { specifier: source, imported: nameOf(specifier.imported) }] as const];
+          })
+        : [],
+    ),
+  );
+
+  const visit = (statement: TSESTree.ProgramStatement): Exports => {
+    const none: Exports = { own: false, names: [], reexports: [], stars: [] };
+
+    switch (statement.type) {
+      case "ImportDeclaration":
+        return none;
+      case "ExportAllDeclaration": {
+        if (statement.exportKind === "type") return none;
+
+        const specifier = statement.source.value;
+
+        return statement.exported
+          ? {
+              ...none,
+              names: [nameOf(statement.exported)],
+              reexports: [{ name: nameOf(statement.exported), specifier, imported: "*" }],
+            }
+          : { ...none, stars: [specifier] };
+      }
+      case "ExportNamedDeclaration": {
+        if (statement.exportKind === "type") return none;
+
+        if (statement.declaration)
+          return typeOnlyStatements.has(statement.declaration.type)
+            ? none
+            : { ...none, own: true, names: declaredNames(statement.declaration) };
+
+        const source = statement.source?.value;
+        const specifiers = statement.specifiers.filter((specifier) => specifier.exportKind !== "type");
+        const reexports = specifiers.flatMap((specifier): Reexport[] => {
+          const name = nameOf(specifier.exported);
+          const local = nameOf(specifier.local);
+          const binding = source === undefined ? imported.get(local) : { specifier: source, imported: local };
+
+          return binding ? [{ name, ...binding }] : [];
+        });
+
+        return {
+          own: reexports.length < specifiers.length,
+          names: specifiers.map((specifier) => nameOf(specifier.exported)),
+          reexports,
+          stars: [],
+        };
+      }
+      case "ExportDefaultDeclaration": {
+        const binding =
+          statement.declaration.type === "Identifier" ? imported.get(statement.declaration.name) : undefined;
+
+        return binding
+          ? { ...none, names: ["default"], reexports: [{ name: "default", ...binding }] }
+          : { ...none, own: true, names: ["default"] };
+      }
+      default:
+        return typeOnlyStatements.has(statement.type) ? none : { ...none, own: true };
+    }
+  };
+
+  const parts = statements.map(visit);
+  const reexports = parts.flatMap((part) => part.reexports);
+  const stars = parts.flatMap((part) => part.stars);
+  const svelte = file.path.endsWith(".svelte");
+
+  return {
+    barrel: !svelte && !parts.some((part) => part.own) && reexports.length + stars.length > 0,
+    names: [...new Set([...(svelte ? ["default"] : []), ...parts.flatMap((part) => part.names)])],
+    reexports,
+    stars,
+  };
+};
 
 type Member = TSESTree.MethodDefinition | TSESTree.PropertyDefinition | TSESTree.AccessorProperty | TSESTree.Property;
 
@@ -263,16 +421,47 @@ const className = (member: TSESTree.Node, parents: Parents) => {
 const accessorSuffix = (member: Member) =>
   "kind" in member && member.kind === "get" ? " [get]" : "kind" in member && member.kind === "set" ? " [set]" : "";
 
+const calleeLabel = (callee: TSESTree.Node): string => {
+  const inner = unwrapExpression(callee) ?? callee;
+  const named = memberPath(inner);
+
+  if (named) return named;
+
+  return inner.type === "MemberExpression" && !inner.computed ? inner.property.name : "call";
+};
+
+const enclosingFunction = (node: TSESTree.Node, parents: Parents): FunctionLike | undefined => {
+  const parent = parents.get(node);
+
+  if (!parent) return undefined;
+
+  return isFunction(parent) ? parent : enclosingFunction(parent, parents);
+};
+
+const anonymousName = (fn: FunctionLike, holder: TSESTree.Node, parents: Parents): string => {
+  const parent = parents.get(holder);
+  const isArgument =
+    (parent?.type === "CallExpression" || parent?.type === "NewExpression") &&
+    parent.arguments.some((argument) => argument === holder);
+  const own =
+    isArgument && parent
+      ? `${parent.type === "NewExpression" ? "new " : ""}${calleeLabel(parent.callee)} callback`
+      : `<anonymous>@${fn.loc.start.line}`;
+  const outer = enclosingFunction(fn, parents);
+
+  return outer ? `${functionName(outer, parents)} › ${own}` : own;
+};
+
 export const functionName = (fn: FunctionLike, parents: Parents): string => {
   const ownName = memberPath(fn.id);
-  const anonymous = `<anonymous>@${fn.loc.start.line}`;
+  const holder = outerOfWrappers(fn, parents);
+  const anonymous = () => ownName ?? anonymousName(fn, holder, parents);
 
   if (fn.type === "FunctionDeclaration") return ownName ?? "default";
 
-  const holder = outerOfWrappers(fn, parents);
   const parent = parents.get(holder);
 
-  if (!parent) return ownName ?? anonymous;
+  if (!parent) return anonymous();
 
   switch (parent.type) {
     case "MethodDefinition":
@@ -280,7 +469,7 @@ export const functionName = (fn: FunctionLike, parents: Parents): string => {
     case "AccessorProperty":
       return `${className(parent, parents)}.${keyName(parent)}${accessorSuffix(parent)}`;
     case "Property": {
-      if (parent.value !== holder) return ownName ?? anonymous;
+      if (parent.value !== holder) return anonymous();
 
       const object = parents.get(parent);
       const owner = object && bindingName(outerOfWrappers(object, parents), parents);
@@ -290,13 +479,13 @@ export const functionName = (fn: FunctionLike, parents: Parents): string => {
     }
     case "VariableDeclarator":
     case "AssignmentExpression":
-      return bindingName(holder, parents) ?? ownName ?? anonymous;
+      return bindingName(holder, parents) ?? anonymous();
     case "AssignmentPattern":
-      return parent.right === holder ? (memberPath(parent.left) ?? ownName ?? anonymous) : (ownName ?? anonymous);
+      return parent.right === holder ? (memberPath(parent.left) ?? anonymous()) : anonymous();
     case "ExportDefaultDeclaration":
       return ownName ?? "default";
     default:
-      return ownName ?? anonymous;
+      return anonymous();
   }
 };
 
@@ -320,6 +509,7 @@ export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
   return {
     path: file.path,
     imports: extractImports(file, nodes),
+    exports: extractExports(file),
     functions: measured.map(({ info }) => info),
     calls: resolveLocalCalls(functionNodes, {
       file: file.path,
@@ -347,15 +537,22 @@ const analyzeSource = (root: string, absolute: string, code: string): Result<Fil
   }
 };
 
-const groupDependencyEdges = (sites: readonly { from: string; to: string; location: Location }[]): DependencyEdge[] => [
+type ImportSite = { from: string; to: string; location: Location; names: readonly string[]; via: readonly string[] };
+
+const merged = (a: readonly string[], b: readonly string[]) => [...new Set([...a, ...b])].toSorted();
+
+const groupDependencyEdges = (sites: readonly ImportSite[]): DependencyEdge[] => [
   ...sites
     .reduce((map, site) => {
       const key = `${site.from}\u0000${site.to}`;
+      const known = map.get(key);
       return map.set(key, {
         kind: "imports",
         from: site.from,
         to: site.to,
-        occurrences: [...(map.get(key)?.occurrences ?? []), site.location],
+        occurrences: [...(known?.occurrences ?? []), site.location],
+        names: merged(known?.names ?? [], site.names),
+        via: merged(known?.via ?? [], site.via),
       });
     }, new Map<string, DependencyEdge>())
     .values(),
@@ -429,17 +626,51 @@ export const analyzeProject = async (
       resolution: resolve(reference.specifier, path.join(root, analysis.path)),
     })),
   );
-  const dependencyEdges = groupDependencyEdges(
+  const targets = new Map(
     resolutions.flatMap(({ reference, importer, resolution }) =>
       resolution.kind === "local"
-        ? [
-            {
-              from: moduleId(importer),
-              to: moduleId(relative(resolution.file)),
-              location: reference.location,
-            },
-          ]
+        ? [[`${importer}\u0000${reference.specifier}`, relative(resolution.file)] as const]
         : [],
+    ),
+  );
+  const exportTables = new Map(analyses.map((analysis) => [analysis.path, analysis.exports]));
+  const define = barrelResolver(exportTables, (file, specifier) => targets.get(`${file}\u0000${specifier}`));
+  const localImports = resolutions.flatMap(({ reference, importer, resolution }) =>
+    resolution.kind === "local" ? [{ reference, importer, file: relative(resolution.file) }] : [],
+  );
+  const importEdges = groupDependencyEdges(
+    localImports.map(({ reference, importer, file }) => ({
+      from: moduleId(importer),
+      to: moduleId(file),
+      location: reference.location,
+      names: reference.names,
+      via: [],
+    })),
+  );
+  const dependencyEdges = groupDependencyEdges(
+    localImports.flatMap(({ reference, importer, file }) =>
+      [
+        ...reference.names
+          .map((name) => define(file, name))
+          .reduce(
+            (map, definition) => map.set(definition.file, [...(map.get(definition.file) ?? []), definition]),
+            new Map<string, ReturnType<typeof define>[]>(),
+          ),
+      ].flatMap(([target, definitions]): ImportSite[] => {
+        const via = [...new Set(definitions.flatMap((definition) => definition.via))].map(moduleId);
+
+        return target === importer && via.length > 0
+          ? []
+          : [
+              {
+                from: moduleId(importer),
+                to: moduleId(target),
+                location: reference.location,
+                names: definitions.map((definition) => definition.name),
+                via,
+              },
+            ];
+      }),
     ),
   );
   const importDiagnostics = resolutions.flatMap(({ reference, importer, resolution }): Diagnostic[] =>
@@ -470,9 +701,10 @@ export const analyzeProject = async (
   );
   const modulePaths = files.map(relative);
   const moduleIds = modulePaths.map(moduleId);
-  const metrics = moduleMetrics(moduleIds, dependencyEdges, functionsByModule);
   const apps = findSvelteKitApps(root, modulePaths);
-  const structure = buildStructure(modulePaths, dependencyEdges, apps);
+  const structure = buildStructure(modulePaths, importEdges, apps);
+  const tests = new Set(moduleIds.filter((id) => structure.placements.get(id)?.side === "test"));
+  const metrics = moduleMetrics(moduleIds, dependencyEdges, functionsByModule, tests);
   const areas = detectAreas(
     moduleIds.filter((id) => {
       const side = structure.placements.get(id)?.side;
@@ -511,6 +743,7 @@ export const analyzeProject = async (
         depth: required(structure.depth, id, "depth"),
         position: required(structure.positions, id, "position"),
         externals: [...(externalsByModule.get(id) ?? [])].toSorted(),
+        barrel: exportTables.get(modulePath)?.barrel ?? false,
       };
     }),
     functions,

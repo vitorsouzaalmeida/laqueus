@@ -1,5 +1,16 @@
-import { type Facts, type FunctionFacts, type Stats, branchStep, byText } from "../facts";
-import { type ModuleNode, type Result, err, ok } from "../model";
+import {
+  type CycleEdge,
+  type Facts,
+  type FunctionFacts,
+  type ImportRef,
+  type Stats,
+  branchStep,
+  byText,
+  shownCuts,
+} from "../facts";
+import { ccBand, hubFloor, hubRank } from "../judgement";
+import { largestCut } from "../metrics";
+import { type ModuleNode, type Result, type Side, err, ok } from "../model";
 import { type Tree, type TreeNode, ancestry, partNames, slug } from "../tree";
 import { bullets, code, factLines, orNone, page, plural, section, table } from "./markdown";
 
@@ -87,10 +98,31 @@ const functionSection = (fn: FunctionFacts) => {
   ].join("\n")}`;
 };
 
+const importNote = (ref: ImportRef) =>
+  `${lineList(ref.lines)}${ref.via.length === 0 ? "" : `, via ${ref.via.map(code).join(", ")}`}`;
+
+const edgeText = (edge: CycleEdge) =>
+  `${code(edge.from)} → ${code(edge.to)} (${lineList(edge.lines)}: ${edge.names.map(code).join(", ")})`;
+
+const cutText = (cut: readonly CycleEdge[]) => cut.map(edgeText).join("; ");
+
+const percent = (count: number, total: number) => (total === 0 ? "0%" : `${((count / total) * 100).toFixed(1)}%`);
+
+const nearestRank = (sorted: readonly number[], p: number) =>
+  sorted.length === 0 ? null : (sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)] ?? null);
+
+const ratioText = (value: number | null) => (value === null ? "none" : value.toFixed(2));
+
+const shownHigh = 50;
+
 const definitions: readonly (readonly [string, string])[] = [
   [
     "CC",
-    "Cyclomatic complexity of one function: 1, plus 1 for each if, loop (for, for-in, for-of, while, do-while), catch, ternary, && / || / ??, default value, case with a test, logical assignment (&&=, ||=, ??=) and optional chain (?. on a member or call). Nested functions and classes are measured on their own.",
+    "Cyclomatic complexity of one function: 1, plus 1 for each if, loop (for, for-in, for-of, while, do-while), catch, ternary, && / ||, case with a test and logical assignment (&&=, ||=). Checks for undefined values add nothing: optional chains (?.), ?? and ??=, and default values. Nested functions and classes are measured on their own.",
+  ],
+  [
+    "Function names",
+    "A function passed to a call is named after the function holding it and the call, e.g. `load › db.transaction callback`; other unnamed functions are `<anonymous>@<line>`, also prefixed by the function holding them.",
   ],
   ["Max CC", "Highest CC among the functions of a file, or of every file in a part. none when there is no function."],
   ["Mean CC", "Mean CC of the functions of a file, rounded to two decimals. none when there is no function."],
@@ -100,8 +132,19 @@ const definitions: readonly (readonly [string, string])[] = [
     "Calls, Called by",
     "Calls between functions of the same file that the scan could resolve. Calls across files are not tracked.",
   ],
-  ["Fan-in", "Number of distinct project files that import this file. A file importing itself is not counted."],
-  ["Fan-out", "Number of distinct project files this file imports. A file importing itself is not counted."],
+  [
+    "Fan-in",
+    "Number of distinct project files that import this file, not counting test files and the file itself. An import from a barrel counts against the file that defines the imported name.",
+  ],
+  ["Test fan-in", "Number of distinct test files that import this file."],
+  [
+    "Fan-out",
+    "Number of distinct project files this file imports, not counting itself. An import from a barrel counts against the file that defines the imported name.",
+  ],
+  [
+    "Barrel",
+    "A file that only re-exports names from other files (export … from, export *, or import then export), with no code of its own. Imports of a name through a barrel are followed to the file that defines it, and are listed with `via` and the barrel. A whole-module import (import * as, import(), side-effect import) stays on the barrel. Sides are found from the imports as written, since SvelteKit loads everything a barrel re-exports.",
+  ],
   [
     "Imports internal, Imports in, Imports out",
     "Import edges, counted once per importing file and imported file however many statements join them; type-only imports are ignored. Internal: both files inside the part. In: from a file outside to one inside. Out: from a file inside to one outside.",
@@ -125,7 +168,23 @@ const definitions: readonly (readonly [string, string])[] = [
   ],
   [
     "Area, Sub-area",
-    "Groups of files found with the Louvain method on the import graph, stopped after two levels. Files in the same folder get a weak extra link. Each area is named after the folder most of its files live in. Internal imports: imports with both files in the area. Touching imports: imports with at least one file in it.",
+    "Groups of files found with the Louvain method on the import graph, stopped after two levels. Files in the same folder get a weak extra link. Each area is named after the folder most of its files live in. Internal imports: imports with both files in the area. Touching imports: imports with at least one file in it and the other in some area; imports from tests, tooling and unreached files are left out.",
+  ],
+  [
+    "Cohesion",
+    "Internal imports divided by touching imports, from 0 to 1. Higher means the area mostly imports itself.",
+  ],
+  [
+    "Instability",
+    "Imports from the area to other areas divided by all imports between the area and other areas (in + out), from 0 to 1. 0: other areas depend on it and it depends on none (stable). 1: it depends on others and none depend on it (unstable).",
+  ],
+  [
+    "Area cycle",
+    "Top-level areas that import each other in a loop, found as strongly connected components of the graph of imports between areas. Numbered from 1 in the order of their first area label.",
+  ],
+  [
+    "Stable area depending on a less stable one",
+    "An import from area A to area B where A's instability is lower than B's. Stable code is expected to depend on code that is at least as stable; an import the other way makes the stable area change when the unstable one does.",
   ],
   [
     "Entry point",
@@ -146,11 +205,11 @@ const definitions: readonly (readonly [string, string])[] = [
   ["Max CC band", "The CC band of a file's highest-complexity function. none when the file has no functions."],
   [
     "Fan-in band, Fan-out band",
-    "Percentile rank of a file's fan-in or fan-out within the project. The percentile is floor(100 × count of files with a strictly lower value / total files). Bands: low (below P75), moderate (P75–P89), high (P90–P94), extreme (P95+). The thresholds adapt to each project.",
+    "Percentile rank of a file's fan-in or fan-out among the files of its own side (client, shared, server…). The percentile is floor(100 × count of files of the side with a strictly lower value / files of the side). Bands: low (below P75), moderate (P75–P89), high (P90–P94), extreme (P95+). The thresholds adapt to each project and side.",
   ],
   [
     "Hub",
-    "A file in the top quartile of both fan-in and fan-out (percentile rank ≥ 75 on both). It depends on many files and many files depend on it.",
+    `A file in the top quartile of both fan-in and fan-out within its side (percentile rank ≥ ${hubRank} on both), with at least ${hubFloor} of each. Barrels are never hubs. It depends on many files and many files depend on it.`,
   ],
   [
     "Cycle severity",
@@ -160,24 +219,40 @@ const definitions: readonly (readonly [string, string])[] = [
     "Density",
     "Directed import edges inside a cycle divided by the maximum possible (size × (size − 1)), excluding self-imports. Ranges from 0 to 1; higher means more tangled.",
   ],
+  [
+    "Smallest cut",
+    `The fewest imports inside a cycle whose removal leaves no cycle among its files, each with the names it imports. Every choice of that size is listed, fewest imported names first, at most ${shownCuts}. Only cuts of up to ${largestCut} imports are searched.`,
+  ],
+  [
+    "Median CC, P90 CC, P95 CC, P99 CC",
+    "Nearest-rank percentiles of the CC of the functions in the export: the smallest CC that at least that share of functions do not exceed.",
+  ],
   ["Lines", "Lines are 1-based."],
 ];
 
-const scaleLine = (label: string, scale: Facts["fanInScale"]): string => {
+const scaleLine = (label: string, scale: ReturnType<Facts["scaleOf"]>["fanIn"]): string => {
   const { cutoffs, population } = scale;
   const parts: string[] = [];
   if (cutoffs.moderate !== null) parts.push(`moderate from ${cutoffs.moderate}`);
   if (cutoffs.high !== null) parts.push(`high from ${cutoffs.high}`);
   if (cutoffs.extreme !== null) parts.push(`extreme from ${cutoffs.extreme}`);
-  return parts.length > 0 ? `- ${label}: ${parts.join(", ")} (of ${population} files)` : `- ${label}: all values equal`;
+  return parts.length > 0
+    ? `- ${label}: ${parts.join(", ")} (of ${plural(population, "file")})`
+    : `- ${label}: all values equal`;
 };
 
 const judgementSection = (facts: Facts, modules: readonly ModuleNode[]): string => {
   const hubs = modules.filter((m) => facts.file(m).bands.hub).map((m) => m.path);
+  const sides = facts.data.lanes
+    .map((lane) => lane.side)
+    .filter((side) => modules.some((module) => module.placement.side === side));
   return [
     "- CC bands: low 1–10, moderate 11–15, high 16+ (fixed thresholds)",
-    scaleLine("Fan-in", facts.fanInScale),
-    scaleLine("Fan-out", facts.fanOutScale),
+    ...sides.flatMap((side: Side) => [
+      scaleLine(`Fan-in, ${side}`, facts.scaleOf(side).fanIn),
+      scaleLine(`Fan-out, ${side}`, facts.scaleOf(side).fanOut),
+    ]),
+    `- Hub rule: percentile rank ≥ ${hubRank} on both fan-in and fan-out within the side, at least ${hubFloor} of each, not a barrel`,
     `- Hubs: ${hubs.length === 0 ? "none" : hubs.map(code).join(", ")}`,
     `- Cycle severity: minor (≤2 files), moderate (3–5), severe (6+)`,
   ].join("\n");
@@ -203,6 +278,25 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
 
   const modulesByPath = new Map(data.modules.map((module) => [module.path, module]));
   const laneLabel = new Map(data.lanes.map((lane) => [lane.side, lane.label]));
+
+  const areaLines = (id: string): (readonly [string, string | number | null])[] => {
+    const area = data.areas.find((candidate) => candidate.id === id);
+    const coupling = facts.areaFacts.get(id);
+
+    return area && coupling
+      ? [
+          ["Internal imports", area.internalImports],
+          ["Touching imports", area.touchingImports],
+          ["Cohesion", ratioText(coupling.cohesion)],
+          ["Instability", ratioText(coupling.instability)],
+          ["Imports from other areas", coupling.incoming],
+          ["Imports to other areas", coupling.outgoing],
+          ...(area.parent === null
+            ? ([["Area cycle", coupling.cycle === null ? null : `#${coupling.cycle}`]] as const)
+            : []),
+        ]
+      : [];
+  };
 
   const cyclesTouching = (moduleIds: readonly string[], noun: string) => {
     const inside = new Set(moduleIds.flatMap((id) => facts.modules.get(id)?.path ?? []));
@@ -361,7 +455,7 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
       file.cycle === null ? "no cycle" : `cycle #${file.cycle}`,
     ].join(" · ");
     const importList = (refs: typeof file.imports) =>
-      bullets(refs.map((ref) => `${code(ref.path)} (${lineList(ref.lines)})`));
+      bullets(refs.map((ref) => `${code(ref.path)} (${importNote(ref)})`));
 
     add(
       filePage(file.path),
@@ -378,15 +472,17 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
             ["Reason", file.reason],
             ["Reached on the client", chain(file.chains.client)],
             ["Reached on the server", chain(file.chains.server)],
+            ["Barrel", file.barrel ? "yes" : "no"],
             ["Fan-in", file.fanIn],
             [
               "Fan-in band",
-              `${file.bands.fanInBand} (P${file.bands.fanInPercentile} of ${file.bands.population} files)`,
+              `${file.bands.fanInBand} (P${file.bands.fanInPercentile} of ${file.bands.population} ${file.side} files)`,
             ],
+            ["Test fan-in", file.testFanIn],
             ["Fan-out", file.fanOut],
             [
               "Fan-out band",
-              `${file.bands.fanOutBand} (P${file.bands.fanOutPercentile} of ${file.bands.population} files)`,
+              `${file.bands.fanOutBand} (P${file.bands.fanOutPercentile} of ${file.bands.population} ${file.side} files)`,
             ],
             ["Functions", file.functionCount],
             ["Max CC", file.maxCC],
@@ -492,12 +588,7 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
             factLines([
               ["Kind", kind],
               ...(node.side === null ? [] : ([["Side", node.side]] as const)),
-              ...(node.area
-                ? ([
-                    ["Internal imports", node.area.internalImports],
-                    ["Touching imports", node.area.touchingImports],
-                  ] as const)
-                : []),
+              ...(node.area ? areaLines(node.area.id) : []),
             ]),
             nodeDescription(node),
           ].join("\n\n"),
@@ -533,9 +624,21 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
             const bandLines = bands
               ? `\n- Severity: ${bands.severity}\n- Edges: ${bands.edges}\n- Density: ${bands.density === null ? "none" : bands.density.toFixed(2)}`
               : "";
+            const smallest = cycle.cuts[0];
+            const cutLines = smallest
+              ? [
+                  `- Smallest cut: ${plural(smallest.length, "import")}, ${plural(cycle.cuts.length, "choice")}`,
+                  ...cycle.cuts.slice(0, shownCuts).map((cut, index) => `  - Choice ${index + 1}: ${cutText(cut)}`),
+                ].join("\n")
+              : `- Smallest cut: none of ${largestCut} imports or fewer`;
             return section(
               `Cycle #${cycle.number}`,
-              `- Files: ${cycle.files.length}${bandLines}\n${bullets(cycle.files.map(code))}`,
+              [
+                `- Files: ${cycle.files.length}${bandLines}`,
+                bullets(cycle.files.map(code)),
+                `${cutLines}\n`,
+                `### Imports inside cycle #${cycle.number}\n\n${bullets(cycle.edges.map(edgeText))}`,
+              ].join("\n"),
             );
           })),
     ),
@@ -652,6 +755,186 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
     );
   });
 
+  const scopeAreas = new Set(modules.flatMap((module) => (module.areaId === null ? [] : [module.areaId])));
+  const topAreas = data.areas.filter(
+    (area) => area.parent === null && area.id !== "area:standalone" && scopeAreas.has(area.id),
+  );
+  const touchesArea = (...ids: readonly string[]) => ids.some((id) => scopeAreas.has(id));
+  const areaName = (id: string) => code(facts.areaLabelOf(id));
+  const areaCycles = facts.areaCycles.filter((cycle) => touchesArea(...cycle.areas));
+  const twoWay = facts.twoWay.filter((pair) => touchesArea(pair.a, pair.b));
+  const violations = facts.violations.filter((link) => touchesArea(link.from, link.to));
+  const areaCycleLines = bullets(
+    areaCycles.map(
+      (cycle) =>
+        `Area cycle #${cycle.number} (${plural(cycle.areas.length, "area")}): ${cycle.areas.map(areaName).join(", ")}`,
+    ),
+  );
+  const twoWayTable = table(
+    ["Area A", "Area B", "Imports A → B", "Imports B → A"],
+    twoWay.map((pair) => [areaName(pair.a), areaName(pair.b), pair.ab, pair.ba]),
+  );
+  const violationTable = (list: typeof violations) =>
+    table(
+      ["From", "Instability", "To", "Instability", "Imports"],
+      list.map((link) => [
+        areaName(link.from),
+        ratioText(link.fromInstability),
+        areaName(link.to),
+        ratioText(link.toInstability),
+        link.imports,
+      ]),
+    );
+  const areaPages = (id: string) =>
+    [...tree.nodes.values()]
+      .filter((node) => node.area?.id === id && inMap(node.id))
+      .map((node) => code(mapPage(node.id)))
+      .join(", ") || "not in this export";
+
+  add(
+    "_areas.md",
+    page(
+      `Areas: ${plural(topAreas.length, "area")} · ${plural(areaCycles.length, "area cycle")} · ${plural(twoWay.length, "two-way dependency", "two-way dependencies")}`,
+      "Areas",
+      section(
+        "Areas",
+        table(
+          [
+            "Area",
+            "Files",
+            "Internal imports",
+            "Touching imports",
+            "Cohesion",
+            "Instability",
+            "Imports in",
+            "Imports out",
+            "Area cycle",
+            "Map pages",
+          ],
+          topAreas.map((area) => {
+            const coupling = facts.areaFacts.get(area.id);
+            return [
+              areaName(area.id),
+              area.moduleIds.length,
+              area.internalImports,
+              area.touchingImports,
+              ratioText(coupling?.cohesion ?? null),
+              ratioText(coupling?.instability ?? null),
+              coupling?.incoming ?? 0,
+              coupling?.outgoing ?? 0,
+              coupling?.cycle === null || coupling?.cycle === undefined ? "none" : `#${coupling.cycle}`,
+              areaPages(area.id),
+            ];
+          }),
+        ),
+      ),
+      section(
+        "Imports between areas",
+        table(
+          ["From", "To", "Imports"],
+          facts.areaLinks
+            .filter((link) => touchesArea(link.from, link.to))
+            .map((link) => [areaName(link.from), areaName(link.to), link.imports]),
+        ),
+      ),
+      section("Area cycles", areaCycleLines),
+      section("Two-way dependencies", twoWayTable),
+      section("Stable areas depending on less stable ones", violationTable(violations)),
+    ),
+  );
+
+  const inScope = new Set(modules.map((module) => module.id));
+  const scopedFunctions = data.functions.filter((fn) => inScope.has(fn.moduleId));
+  const scores = scopedFunctions.map((fn) => fn.complexity).toSorted((a, b) => a - b);
+  const bandCount = (band: ReturnType<typeof ccBand>) => scores.filter((score) => ccBand(score) === band).length;
+  const high = scopedFunctions
+    .filter((fn) => ccBand(fn.complexity) === "high")
+    .toSorted(
+      (a, b) =>
+        b.complexity - a.complexity || byText(a.location.file, b.location.file) || a.location.line - b.location.line,
+    );
+  const hubs = modules.map((module) => facts.file(module)).filter((file) => file.bands.hub);
+  const findingCycles = facts.cycles.filter((cycle) => touches(cycle.files));
+  const barrels = modules.filter((module) => module.barrel).map((module) => module.path);
+
+  add(
+    "_findings.md",
+    page(
+      `Findings: ${plural(high.length, "function")} in the high CC band · ${plural(hubs.length, "hub")} · ${plural(findingCycles.length, "cycle")} · ${plural(areaCycles.length, "area cycle")}`,
+      "Findings",
+      "What stands out in this export. Each section points to the pages with the details; what each label counts is in `_definitions.md`.",
+      section(
+        "CC distribution",
+        factLines([
+          ["Functions", scores.length],
+          ["Median CC", nearestRank(scores, 50)],
+          ["P90 CC", nearestRank(scores, 90)],
+          ["P95 CC", nearestRank(scores, 95)],
+          ["P99 CC", nearestRank(scores, 99)],
+          ["Max CC", scores.at(-1) ?? null],
+          ["Low band", `${bandCount("low")} (${percent(bandCount("low"), scores.length)})`],
+          ["Moderate band", `${bandCount("moderate")} (${percent(bandCount("moderate"), scores.length)})`],
+          ["High band", `${bandCount("high")} (${percent(bandCount("high"), scores.length)})`],
+        ]),
+      ),
+      section(
+        "Functions in the high CC band",
+        [
+          table(
+            ["Function", "CC", "File", "Line"],
+            high
+              .slice(0, shownHigh)
+              .map((fn) => [code(fn.name), fn.complexity, code(fn.location.file), fn.location.line]),
+          ),
+          ...(high.length > shownHigh ? [`- And ${high.length - shownHigh} more in the high band.`] : []),
+        ].join("\n\n"),
+      ),
+      section(
+        "Hubs",
+        table(
+          ["File", "Side", "Fan-in", "Fan-out", "Test fan-in", "Cycle"],
+          hubs.map((file) => [
+            code(file.path),
+            file.side,
+            file.fanIn,
+            file.fanOut,
+            file.testFanIn,
+            file.cycle === null ? "none" : `#${file.cycle}`,
+          ]),
+        ),
+      ),
+      section(
+        "Import cycles",
+        [
+          table(
+            ["Cycle", "Files", "Severity", "Smallest cut"],
+            findingCycles.map((cycle) => [
+              `#${cycle.number}`,
+              cycle.files.length,
+              facts.cycleBands.get(cycle.number)?.severity ?? "none",
+              cycle.cuts[0]
+                ? `${plural(cycle.cuts[0].length, "import")} (${plural(cycle.cuts.length, "choice")}): ${cutText(cycle.cuts[0])}`
+                : `none of ${largestCut} imports or fewer`,
+            ]),
+          ),
+          "Every choice and the imports of each cycle: `_cycles.md`.",
+        ].join("\n\n"),
+      ),
+      section("Area cycles", `${areaCycleLines}\n\n${twoWayTable}\n\nDetails: \`_areas.md\`.`),
+      section(
+        "Stable areas depending on less stable ones",
+        [
+          violationTable(violations.slice(0, 10)),
+          ...(violations.length > 10 ? [`- And ${violations.length - 10} more in \`_areas.md\`.`] : []),
+        ].join("\n\n"),
+      ),
+      section(
+        "Barrels",
+        `${factLines([["Barrels", barrels.length]])}\n${barrels.length === 0 ? "" : bullets(barrels.map(code))}`.trim(),
+      ),
+    ),
+  );
+
   add(
     "_definitions.md",
     page(
@@ -720,7 +1003,8 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
           "Names starting with `_` are generated pages; everything else mirrors the source tree.",
           `${code(scopeNode && scopeNode.kind !== "root" ? mapPage(scopeNode.id) : "_map/_index.md")} groups the files the way the Laqueus viewer does: by side (client, server…), then by area and sub-area.`,
           'Facts are written as `- Label: value` lines, so they can be searched, e.g. `grep -rl "Cycle: #<n>" .` for the files of one cycle.',
-          "Also: `_cycles.md`, `_packages.md`, `_routes/_index.md`, `_diagnostics.md`. What each label counts: `_definitions.md`.",
+          "Start with `_findings.md` for what stands out: the CC distribution, the most complex functions, hubs, cycles with the imports that would break them, and coupling between areas.",
+          "Also: `_cycles.md`, `_areas.md`, `_packages.md`, `_routes/_index.md`, `_diagnostics.md`. What each label counts: `_definitions.md`.",
         ]),
       ),
       section(

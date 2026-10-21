@@ -2,6 +2,7 @@ export type Location = { file: string; line: number; column: number };
 
 export type ModuleMetrics = {
   fanIn: number;
+  testFanIn: number;
   fanOut: number;
   maxCC: number | null;
   meanCC: number | null;
@@ -33,6 +34,7 @@ export type ModuleNode = {
   depth: number;
   position: Point;
   externals: string[];
+  barrel: boolean;
 };
 
 export type Area = {
@@ -84,6 +86,8 @@ export type DependencyEdge = {
   from: string;
   to: string;
   occurrences: Location[];
+  names: string[];
+  via: string[];
 };
 
 export type CallEdge = {

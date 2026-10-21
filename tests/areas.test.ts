@@ -8,6 +8,8 @@ const edge = (from: string, to: string): DependencyEdge => ({
   from: `module:${from}`,
   to: `module:${to}`,
   occurrences: [],
+  names: ["*"],
+  via: [],
 });
 
 const cluster = (folder: string) => [1, 2, 3, 4, 5].map((n) => `${folder}/f${n}.ts`);

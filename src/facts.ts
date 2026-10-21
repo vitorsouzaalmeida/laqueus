@@ -1,4 +1,5 @@
 import type {
+  Area,
   CallEdge,
   DependencyEdge,
   DiagnosticKind,
@@ -10,7 +11,8 @@ import type {
   Side,
 } from "./model";
 import { modulePath } from "./model";
-import { type CcBand, type FanBand, ccBand, cycleSeverity, isHub, rankScale } from "./judgement";
+import { type CcBand, type FanBand, type RankScale, ccBand, cycleSeverity, isHub, rankScale } from "./judgement";
+import { smallestCuts, stronglyConnectedComponents } from "./metrics";
 import { externalCounts, nodeStats, outgoingImports, routeReach } from "./tree";
 
 export type Stats = {
@@ -24,7 +26,7 @@ export type Stats = {
 
 export type PackageCount = { name: string; files: number };
 
-export type ImportRef = { path: string; lines: number[] };
+export type ImportRef = { path: string; lines: number[]; via: string[] };
 
 export type CallRef = { id: string; name: string; file: string; lines: number[] };
 
@@ -40,6 +42,7 @@ export type FileBands = {
 
 export type FileFacts = {
   path: string;
+  barrel: boolean;
   side: Side;
   entry: string | null;
   reason: string;
@@ -47,6 +50,7 @@ export type FileFacts = {
   area: string | null;
   subArea: string | null;
   fanIn: number;
+  testFanIn: number;
   fanOut: number;
   functionCount: number;
   maxCC: number | null;
@@ -74,7 +78,29 @@ export type FunctionFacts = {
   logic: { decisions: Decision[]; waysOut: number } | null;
 };
 
-export type CycleFacts = { number: number; files: string[] };
+export type CycleEdge = { from: string; to: string; lines: number[]; names: string[]; via: string[] };
+
+export type CycleFacts = { number: number; files: string[]; edges: CycleEdge[]; cuts: CycleEdge[][] };
+
+export type SideScales = { fanIn: RankScale; fanOut: RankScale };
+
+export type AreaFacts = {
+  id: string;
+  label: string;
+  cohesion: number | null;
+  instability: number | null;
+  incoming: number;
+  outgoing: number;
+  cycle: number | null;
+};
+
+export type AreaLink = { from: string; to: string; imports: number };
+
+export type AreaCycle = { number: number; areas: string[] };
+
+export type TwoWay = { a: string; b: string; ab: number; ba: number };
+
+export type Violation = AreaLink & { fromInstability: number; toInstability: number };
 
 export type RouteFacts = {
   id: string;
@@ -110,7 +136,27 @@ const lines = (edge: DependencyEdge | CallEdge) => [
 ];
 
 const importRefs = (list: readonly DependencyEdge[], end: "from" | "to"): ImportRef[] =>
-  list.map((edge) => ({ path: modulePath(edge[end]), lines: lines(edge) })).toSorted((a, b) => byText(a.path, b.path));
+  list
+    .map((edge) => ({ path: modulePath(edge[end]), lines: lines(edge), via: edge.via.map(modulePath) }))
+    .toSorted((a, b) => byText(a.path, b.path));
+
+const ratio = (part: number, whole: number) => (whole === 0 ? null : Math.round((part / whole) * 100) / 100);
+
+const cycleEdge = (edge: DependencyEdge): CycleEdge => ({
+  from: modulePath(edge.from),
+  to: modulePath(edge.to),
+  lines: lines(edge),
+  names: edge.names,
+  via: edge.via.map(modulePath),
+});
+
+const cutOrder = (a: readonly CycleEdge[], b: readonly CycleEdge[]) => {
+  const weight = (cut: readonly CycleEdge[]) => cut.reduce((sum, edge) => sum + edge.names.length, 0);
+  const key = (cut: readonly CycleEdge[]) => cut.map((edge) => `${edge.from}\u0000${edge.to}`).join("\u0001");
+  return weight(a) - weight(b) || byText(key(a), key(b));
+};
+
+export const shownCuts = 5;
 
 export const branchStep = (trail: readonly string[], steps: readonly string[]): string | undefined => {
   const index = steps.findIndex((step, position) => trail[position] !== step);
@@ -125,8 +171,19 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
   const importsFrom = groupBy(edges, (edge) => edge.from);
   const importsTo = groupBy(edges, (edge) => edge.to);
 
-  const fanInScale = rankScale(data.modules.map((m) => m.metrics.fanIn));
-  const fanOutScale = rankScale(data.modules.map((m) => m.metrics.fanOut));
+  const scales = new Map<Side, SideScales>(
+    data.lanes.map(({ side }) => {
+      const members = data.modules.filter((module) => module.placement.side === side);
+      return [
+        side,
+        {
+          fanIn: rankScale(members.map((member) => member.metrics.fanIn)),
+          fanOut: rankScale(members.map((member) => member.metrics.fanOut)),
+        },
+      ] as const;
+    }),
+  );
+  const scaleOf = (side: Side): SideScales => scales.get(side) ?? { fanIn: rankScale([]), fanOut: rankScale([]) };
 
   const cycleEdgeCounts = new Map<number, number>();
   edges.forEach((edge) => {
@@ -164,11 +221,13 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
   const areaLabel = (id: string | null) => (id === null ? null : (areas.get(id)?.label ?? null));
 
   const file = (module: ModuleNode): FileFacts => {
-    const fanInRank = fanInScale.rank(module.metrics.fanIn);
-    const fanOutRank = fanOutScale.rank(module.metrics.fanOut);
+    const scale = scaleOf(module.placement.side);
+    const fanInRank = scale.fanIn.rank(module.metrics.fanIn);
+    const fanOutRank = scale.fanOut.rank(module.metrics.fanOut);
 
     return {
       path: module.path,
+      barrel: module.barrel,
       side: module.placement.side,
       entry: module.placement.entry,
       reason: module.placement.reason,
@@ -179,6 +238,7 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
       area: areaLabel(module.areaId),
       subArea: areaLabel(module.subAreaId),
       fanIn: module.metrics.fanIn,
+      testFanIn: module.metrics.testFanIn,
       fanOut: module.metrics.fanOut,
       functionCount: module.metrics.functionCount,
       maxCC: module.metrics.maxCC,
@@ -189,13 +249,15 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
       importedBy: importRefs(importsTo.get(module.id) ?? [], "from"),
       packages: module.externals,
       bands: {
-        fanInBand: fanInScale.band(module.metrics.fanIn),
+        fanInBand: scale.fanIn.band(module.metrics.fanIn),
         fanInPercentile: fanInRank,
-        fanOutBand: fanOutScale.band(module.metrics.fanOut),
+        fanOutBand: scale.fanOut.band(module.metrics.fanOut),
         fanOutPercentile: fanOutRank,
         maxCcBand: module.metrics.maxCC !== null ? ccBand(module.metrics.maxCC) : null,
-        hub: isHub(fanInRank, fanOutRank),
-        population: fanInScale.population,
+        hub:
+          !module.barrel &&
+          isHub({ value: module.metrics.fanIn, rank: fanInRank }, { value: module.metrics.fanOut, rank: fanOutRank }),
+        population: scale.fanIn.population,
       },
     };
   };
@@ -289,11 +351,101 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
 
   const cycles: CycleFacts[] = [...groupBy(data.modules, (module) => String(module.metrics.cycleGroup ?? ""))]
     .filter(([group]) => group !== "")
-    .map(([group, members]) => ({
-      number: Number(group) + 1,
-      files: members.map((module) => module.path).toSorted(byText),
-    }))
+    .map(([group, members]) => {
+      const ids = new Set(members.map((module) => module.id));
+      const inside = data.dependencyEdges
+        .filter((edge) => ids.has(edge.from) && ids.has(edge.to))
+        .toSorted((a, b) => byText(a.from, b.from) || byText(a.to, b.to));
+
+      return {
+        number: Number(group) + 1,
+        files: members.map((module) => module.path).toSorted(byText),
+        edges: inside.map(cycleEdge),
+        cuts: smallestCuts([...ids], inside)
+          .map((cut) => cut.map(cycleEdge))
+          .toSorted(cutOrder),
+      };
+    })
     .toSorted((a, b) => a.number - b.number);
+
+  const areaById = new Map(data.areas.map((area) => [area.id, area]));
+  const areaLabelOf = (id: string) => areaById.get(id)?.label ?? id;
+  const hasArea = (id: string) => (modules.get(id)?.areaId ?? null) !== null;
+  const topOf = (id: string) => modules.get(id)?.areaId ?? null;
+  const topAreas = data.areas.filter((area) => area.parent === null && area.id !== "area:standalone");
+  const areaLinks: AreaLink[] = [
+    ...edges
+      .reduce((counts, edge) => {
+        const from = topOf(edge.from);
+        const to = topOf(edge.to);
+
+        if (from === null || to === null || from === to) return counts;
+
+        const key = `${from}\u0000${to}`;
+        return counts.set(key, { from, to, imports: (counts.get(key)?.imports ?? 0) + 1 });
+      }, new Map<string, AreaLink>())
+      .values(),
+  ].toSorted(
+    (a, b) => byText(areaLabelOf(a.from), areaLabelOf(b.from)) || byText(areaLabelOf(a.to), areaLabelOf(b.to)),
+  );
+  const areaCycles: AreaCycle[] = stronglyConnectedComponents(
+    topAreas.map((area) => area.id),
+    new Map(
+      [...groupBy(areaLinks, (link) => link.from)].map(([from, out]) => [from, out.map((link) => link.to)] as const),
+    ),
+  )
+    .filter((component) => component.length > 1)
+    .map((component) => component.toSorted((a, b) => byText(areaLabelOf(a), areaLabelOf(b))))
+    .toSorted(([a = ""], [b = ""]) => byText(areaLabelOf(a), areaLabelOf(b)))
+    .map((areaIds, index) => ({ number: index + 1, areas: areaIds }));
+  const areaCycleOf = new Map(areaCycles.flatMap((cycle) => cycle.areas.map((id) => [id, cycle.number] as const)));
+
+  const coupling = (area: Area): AreaFacts => {
+    const members = new Set(area.moduleIds);
+    const incoming = edges.filter((edge) => members.has(edge.to) && !members.has(edge.from) && hasArea(edge.from));
+    const outgoing = edges.filter((edge) => members.has(edge.from) && !members.has(edge.to) && hasArea(edge.to));
+
+    return {
+      id: area.id,
+      label: area.label,
+      cohesion: ratio(area.internalImports, area.touchingImports),
+      instability: ratio(outgoing.length, incoming.length + outgoing.length),
+      incoming: incoming.length,
+      outgoing: outgoing.length,
+      cycle: areaCycleOf.get(area.id) ?? null,
+    };
+  };
+  const areaFacts = new Map(data.areas.map((area) => [area.id, coupling(area)]));
+  const linkCount = new Map(areaLinks.map((link) => [`${link.from}\u0000${link.to}`, link.imports]));
+  const twoWay: TwoWay[] = areaLinks
+    .filter((link) => byText(areaLabelOf(link.from), areaLabelOf(link.to)) < 0)
+    .flatMap((link) => {
+      const back = linkCount.get(`${link.to}\u0000${link.from}`);
+      return back === undefined ? [] : [{ a: link.from, b: link.to, ab: link.imports, ba: back }];
+    })
+    .toSorted(
+      (x, y) =>
+        Math.min(y.ab, y.ba) - Math.min(x.ab, x.ba) ||
+        y.ab + y.ba - (x.ab + x.ba) ||
+        byText(areaLabelOf(x.a), areaLabelOf(y.a)) ||
+        byText(areaLabelOf(x.b), areaLabelOf(y.b)),
+    );
+  const violations: Violation[] = areaLinks
+    .flatMap((link) => {
+      const fromInstability = areaFacts.get(link.from)?.instability ?? null;
+      const toInstability = areaFacts.get(link.to)?.instability ?? null;
+
+      return fromInstability !== null && toInstability !== null && fromInstability < toInstability
+        ? [{ ...link, fromInstability, toInstability }]
+        : [];
+    })
+    .toSorted(
+      (a, b) =>
+        b.imports - a.imports ||
+        b.toInstability - b.fromInstability - (a.toInstability - a.fromInstability) ||
+        byText(areaLabelOf(a.from), areaLabelOf(b.from)) ||
+        byText(areaLabelOf(a.to), areaLabelOf(b.to)),
+    );
 
   const outgoing = outgoingImports(data);
   const routes: RouteFacts[] = data.routes.map((route) => {
@@ -341,8 +493,13 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
     links,
     cycles,
     cycleBands,
-    fanInScale,
-    fanOutScale,
+    scaleOf,
+    areaFacts,
+    areaLinks,
+    areaCycles,
+    twoWay,
+    violations,
+    areaLabelOf,
     routes,
     diagnostics,
   };
