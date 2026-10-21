@@ -520,37 +520,50 @@ export const analyzeProject = async (
   });
 };
 
-export const functionLogic = async (snapshot: GraphSnapshot, id: string): Promise<Result<FunctionLogic>> => {
-  const fn = snapshot.functions.find((candidate) => candidate.id === id);
-
-  if (!fn) return err(`Unknown function: ${id}`);
-
-  const absolute = path.join(snapshot.root, fn.location.file);
+export const fileLogic = async (snapshot: GraphSnapshot, file: string): Promise<Result<Map<string, FunctionLogic>>> => {
+  const absolute = path.join(snapshot.root, file);
   const code = await readFile(absolute, "utf8").catch(() => undefined);
 
-  if (code === undefined) return err(`Cannot read ${fn.location.file}`);
+  if (code === undefined) return err(`Cannot read ${file}`);
 
   const parsed = parseSource(snapshot.root, absolute, code);
 
   if (!parsed.ok) return err(parsed.error.message);
 
   const { roots, keys } = parsed.value;
-  const node = allNodes(roots, keys)
-    .filter(isFunction)
-    .find(
-      (candidate) => candidate.loc.start.line === fn.location.line && candidate.loc.start.column === fn.location.column,
-    );
-
-  if (!node) return err("This function moved since the last scan. Rescan and try again.");
+  const names = new Map(snapshot.functions.filter((fn) => fn.location.file === file).map((fn) => [fn.id, fn.name]));
 
   return ok(
-    buildLogic({
-      fn: node,
-      name: fn.name,
-      file: fn.location.file,
-      code,
-      keys,
-      complexity: cyclomaticComplexity(node, keys),
-    }),
+    new Map(
+      allNodes(roots, keys)
+        .filter(isFunction)
+        .flatMap((node) => {
+          const id = functionId(locationOf(node, file));
+          const name = names.get(id);
+
+          return name === undefined
+            ? []
+            : [
+                [
+                  id,
+                  buildLogic({ fn: node, name, file, code, keys, complexity: cyclomaticComplexity(node, keys) }),
+                ] as const,
+              ];
+        }),
+    ),
   );
+};
+
+export const functionLogic = async (snapshot: GraphSnapshot, id: string): Promise<Result<FunctionLogic>> => {
+  const fn = snapshot.functions.find((candidate) => candidate.id === id);
+
+  if (!fn) return err(`Unknown function: ${id}`);
+
+  const logic = await fileLogic(snapshot, fn.location.file);
+
+  if (!logic.ok) return logic;
+
+  const found = logic.value.get(id);
+
+  return found ? ok(found) : err("This function moved since the last scan. Rescan and try again.");
 };

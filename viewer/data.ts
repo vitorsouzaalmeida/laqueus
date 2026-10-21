@@ -48,13 +48,6 @@ export const buildIndex = (data: GraphSnapshot): Index => ({
 export const lineRef = (location: Location) => `${location.file}:${location.line}`;
 export const fullRef = (location: Location) => `${location.file}:${location.line}:${location.column + 1}`;
 
-export const externalCounts = (modules: readonly ModuleNode[]) =>
-  [
-    ...modules
-      .flatMap((module) => module.externals)
-      .reduce((map, name) => map.set(name, (map.get(name) ?? 0) + 1), new Map<string, number>()),
-  ].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-
 export const routeLabel = (route: Route, multipleApps: boolean) => {
   const groups = route.directory
     .split("/")

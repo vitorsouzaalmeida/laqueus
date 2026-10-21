@@ -15,9 +15,10 @@ import type {
   Side,
 } from "../src/model";
 import { type Child, basename, formatCC, groupBy, h, plural } from "./dom";
-import { type Index, externalCounts, fullRef, lineRef, routeLabel } from "./data";
+import { type Index, fullRef, lineRef, routeLabel } from "./data";
 import { structuralKinds } from "./flow";
-import type { MapItem, MapLink, MapView, RouteView, Tree, TreeNode } from "./map";
+import type { MapItem, MapLink, MapView, RouteView } from "./map";
+import { type Tree, type TreeNode, externalCounts } from "../src/tree";
 
 export type PanelContext = {
   data: GraphSnapshot;

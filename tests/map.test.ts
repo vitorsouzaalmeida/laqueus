@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { layered } from "../viewer/layered";
-import { buildRouteView, buildTree, buildView, shortestPath } from "../viewer/map";
+import { buildTree } from "../src/tree";
+import { buildRouteView, buildView, shortestPath } from "../viewer/map";
 import { fixture, scan } from "./helpers";
 
 const box = (id: string, rank?: "top" | "bottom") => ({ id, width: 100, height: 40, rank });
