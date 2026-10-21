@@ -69,8 +69,23 @@ const listPart = (facts: Facts, tree: Tree, names: ReadonlyMap<string, string>, 
   const hidden = children.filter((child) => !main.includes(child));
 
   return children.length === 0
-    ? { part: name, label: node.label, kind: kindLabel[node.kind], path: pathLabels, stats: facts.stats(node.moduleIds), files: filesRows(facts, node) }
-    : { part: name, label: node.label, kind: kindLabel[node.kind], path: pathLabels, stats: facts.stats(node.moduleIds), parts: partsRows(facts, names, main), hidden: partsRows(facts, names, hidden) };
+    ? {
+        part: name,
+        label: node.label,
+        kind: kindLabel[node.kind],
+        path: pathLabels,
+        stats: facts.stats(node.moduleIds),
+        files: filesRows(facts, node),
+      }
+    : {
+        part: name,
+        label: node.label,
+        kind: kindLabel[node.kind],
+        path: pathLabels,
+        stats: facts.stats(node.moduleIds),
+        parts: partsRows(facts, names, main),
+        hidden: partsRows(facts, names, hidden),
+      };
 };
 
 export const runList = async (argv: readonly string[], io: Io): Promise<number> => {
