@@ -1,10 +1,12 @@
-import { type Area, type DependencyEdge, modulePath } from "./model";
+import { type Area, type DependencyEdge, type Side, modulePath } from "./model";
 
 type WeightedEdge = readonly [number, number, number];
 
-const folderAffinity = 0.3;
-const largestAffineFolder = 40;
+const folderWeight = 1;
+const largestAffineFolder = 200;
 const minimumLabelShare = 0.25;
+export const farOut = 3;
+export const widelyUsedShare = 0.1;
 
 const directoryOf = (path: string) => {
   const slash = path.lastIndexOf("/");
@@ -18,6 +20,31 @@ const at = <T>(items: readonly T[], index: number): T => {
   if (item === undefined) throw new RangeError(`No item at index ${index}`);
 
   return item;
+};
+
+const quantile = (sorted: readonly number[], share: number) => {
+  const rank = (sorted.length - 1) * share;
+  const low = Math.floor(rank);
+  const high = Math.min(low + 1, sorted.length - 1);
+
+  return at(sorted, low) + (rank - low) * (at(sorted, high) - at(sorted, low));
+};
+
+const widelyUsed = (ids: readonly string[], edges: readonly DependencyEdge[]): Set<string> => {
+  const inSide = new Set(ids);
+  const importers = edges
+    .filter((edge) => edge.from !== edge.to && inSide.has(edge.from) && inSide.has(edge.to))
+    .reduce(
+      (map, edge) => map.set(edge.to, (map.get(edge.to) ?? new Set<string>()).add(edge.from)),
+      new Map<string, Set<string>>(),
+    );
+  const fanIn = (id: string) => importers.get(id)?.size ?? 0;
+  const sorted = ids.map(fanIn).toSorted((a, b) => a - b);
+  const lower = quantile(sorted, 0.25);
+  const upper = quantile(sorted, 0.75);
+  const fence = upper + farOut * Math.max(upper - lower, 1);
+
+  return new Set(ids.filter((id) => fanIn(id) > fence && fanIn(id) >= widelyUsedShare * ids.length));
 };
 
 const normalise = (communities: readonly number[]): number[] => {
@@ -103,7 +130,9 @@ const affinityEdges = (ids: readonly string[]): WeightedEdge[] => {
   return [...byFolder.values()]
     .filter((members) => members.length > 1 && members.length <= largestAffineFolder)
     .flatMap((members) =>
-      members.flatMap((a, position) => members.slice(position + 1).map((b) => [a, b, folderAffinity] as const)),
+      members.flatMap((a, position) =>
+        members.slice(position + 1).map((b) => [a, b, folderWeight / (members.length - 1)] as const),
+      ),
     );
 };
 
@@ -191,11 +220,14 @@ const groupsOf = (assignment: readonly number[]) =>
     new Map<number, number[]>(),
   );
 
-export const detectAreas = (moduleIds: readonly string[], edges: readonly DependencyEdge[]): Area[] => {
-  const ids = moduleIds.toSorted();
+export const detectAreas = (moduleIds: readonly string[], edges: readonly DependencyEdge[], side: Side): Area[] => {
+  const all = moduleIds.toSorted();
 
-  if (ids.length === 0) return [];
+  if (all.length === 0) return [];
 
+  const aside = widelyUsed(all, edges);
+  const ids = all.filter((id) => !aside.has(id));
+  const inSide = new Set(all);
   const position = new Map(ids.map((id, node) => [id, node]));
   const importEdges = edges.flatMap((edge) => {
     const a = position.get(edge.from);
@@ -236,12 +268,12 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Depend
 
   const label = labeller(
     fine.map((nodes) => nodes.map(idOf)),
-    ids,
+    all,
   );
   const bySize = (a: Group, b: Group) => b.members.length - a.members.length;
   const coarseSorted = coarse.toSorted(bySize);
   const coarseLabels = uniqueLabels(coarseSorted.map((group) => label(group.members)));
-  const coarseIds = coarseLabels.map((value) => `area:${slug(value)}`);
+  const coarseIds = coarseLabels.map((value) => `area:${side}:${slug(value)}`);
   const uniqueIds = uniqueLabels(coarseIds).map((value) => value.replace(/ \((\d+)\)$/, "-$1"));
 
   const internal = (members: readonly string[]) => {
@@ -250,7 +282,7 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Depend
       (counts, edge) => {
         const from = set.has(edge.from);
         const to = set.has(edge.to);
-        const between = position.has(edge.from) && position.has(edge.to) && edge.from !== edge.to;
+        const between = inSide.has(edge.from) && inSide.has(edge.to) && edge.from !== edge.to;
 
         return between && (from || to)
           ? { inside: counts.inside + (from && to ? 1 : 0), touching: counts.touching + 1 }
@@ -264,6 +296,7 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Depend
     const counts = internal(group.members);
     return {
       id,
+      side,
       label: areaLabel,
       parent,
       moduleIds: group.members.toSorted(),
@@ -295,7 +328,32 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Depend
   const standaloneArea =
     standalone.length === 0
       ? []
-      : [toArea({ members: standalone.map(idOf), parent: null }, "area:standalone", "Standalone files", null)];
+      : [toArea({ members: standalone.map(idOf), parent: null }, `area:${side}:standalone`, "Standalone files", null)];
 
-  return [...topAreas, ...standaloneArea, ...subAreas];
+  const widelyUsedArea =
+    aside.size === 0
+      ? []
+      : [toArea({ members: [...aside], parent: null }, `area:${side}:widely-used`, "Widely used files", null)];
+
+  return [...topAreas, ...widelyUsedArea, ...standaloneArea, ...subAreas];
+};
+
+export const modularity = (groupOf: ReadonlyMap<string, string>, edges: readonly DependencyEdge[]): number | null => {
+  const links = edges.flatMap((edge) => {
+    const from = groupOf.get(edge.from);
+    const to = groupOf.get(edge.to);
+
+    return edge.from === edge.to || from === undefined || to === undefined ? [] : [[from, to] as const];
+  });
+
+  if (links.length === 0) return null;
+
+  const degree = links.reduce(
+    (map, [from, to]) => map.set(from, (map.get(from) ?? 0) + 1).set(to, (map.get(to) ?? 0) + 1),
+    new Map<string, number>(),
+  );
+  const inside = links.filter(([from, to]) => from === to).length;
+  const expected = [...degree.values()].reduce((sum, value) => sum + (value / (2 * links.length)) ** 2, 0);
+
+  return Math.round((inside / links.length - expected) * 100) / 100;
 };

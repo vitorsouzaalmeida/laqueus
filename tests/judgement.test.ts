@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ccBand, cycleSeverity, isHub, rankScale } from "../src/judgement";
+import { ccBand, cycleSeverity, median, rankScale, role } from "../src/judgement";
 
 describe("ccBand", () => {
   it.each([
@@ -103,14 +103,10 @@ describe("cycleSeverity", () => {
     expect(cycleSeverity(size, edges).severity).toBe(expected);
   });
 
-  it("computes density as edges / (size * (size - 1))", () => {
-    expect(cycleSeverity(3, 6).density).toBe(1.0);
-    expect(cycleSeverity(3, 3).density).toBe(0.5);
-    expect(cycleSeverity(5, 10).density).toBe(0.5);
-  });
-
-  it("returns null density for a self-loop (size 1)", () => {
-    expect(cycleSeverity(1, 0).density).toBeNull();
+  it("counts independent loops as edges − files + 1", () => {
+    expect(cycleSeverity(2, 2).loops).toBe(1);
+    expect(cycleSeverity(5, 5).loops).toBe(1);
+    expect(cycleSeverity(5, 7).loops).toBe(3);
   });
 
   it("tracks the edge count", () => {
@@ -118,22 +114,19 @@ describe("cycleSeverity", () => {
   });
 });
 
-const at = (rank: number, value = 10) => ({ rank, value });
+describe("role", () => {
+  const medians = { fanIn: 3, fanOut: 3 };
 
-describe("isHub", () => {
-  it("is true when both ranks are at or above 75 and both counts reach the floor", () => {
-    expect(isHub(at(75), at(75))).toBe(true);
-    expect(isHub(at(90, 5), at(80, 5))).toBe(true);
+  it("compares visibility with the side's medians, ties falling low", () => {
+    expect(role(4, 4, medians)).toBe("central");
+    expect(role(4, 3, medians)).toBe("shared");
+    expect(role(3, 4, medians)).toBe("control");
+    expect(role(3, 3, medians)).toBe("peripheral");
   });
 
-  it("is false when either rank is below 75", () => {
-    expect(isHub(at(74), at(90))).toBe(false);
-    expect(isHub(at(90), at(74))).toBe(false);
-    expect(isHub(at(50), at(50))).toBe(false);
-  });
-
-  it("is false when either count is below the floor of 5, whatever the rank", () => {
-    expect(isHub(at(99, 4), at(99, 20))).toBe(false);
-    expect(isHub(at(99, 20), at(99, 4))).toBe(false);
+  it("takes the median of odd and even counts", () => {
+    expect(median([5, 1, 3])).toBe(3);
+    expect(median([1, 2, 3, 4])).toBe(2.5);
+    expect(median([])).toBe(0);
   });
 });

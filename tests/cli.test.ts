@@ -74,9 +74,12 @@ describe("laqueus export", () => {
     ).resolves.toBe(0);
 
     const entries = await readdir(target);
-    expect(entries).toEqual(expect.arrayContaining(["_index.md", "_map", "src", markerFile]));
+    expect(entries).toEqual(
+      expect.arrayContaining(["_index.md", "_files.md", "_health.md", "client", "shared", "server", markerFile]),
+    );
+    expect(entries).not.toContain("src");
     expect(await readFile(path.join(target, "_index.md"), "utf8")).toContain("- Exported: 2026-10-20T12:00:00.000Z");
-    expect(await readFile(path.join(target, "src/lib/format.ts.md"), "utf8")).toContain("- Decisions: 0");
+    expect(await readFile(path.join(target, "server/src-lib.md"), "utf8")).toContain("### `src/lib/server/db.ts`");
     expect(logs.join("\n")).toContain("start at");
   });
 
@@ -86,12 +89,12 @@ describe("laqueus export", () => {
     const { io } = fakeIo(directory);
 
     await expect(main(["export", "-C", project], directory, undefined, io)).resolves.toBe(0);
-    expect(await readdir(path.join(project, ".laqueus/src"))).toContain("lone.ts.md");
+    expect(await readFile(path.join(project, ".laqueus/_files.md"), "utf8")).toContain("`src/lone.ts`");
 
     await rm(path.join(project, "src/lone.ts"));
 
     await expect(main(["export", "-C", project], directory, undefined, io)).resolves.toBe(0);
-    expect(await readdir(path.join(project, ".laqueus/src"))).not.toContain("lone.ts.md");
+    expect(await readFile(path.join(project, ".laqueus/_files.md"), "utf8")).not.toContain("`src/lone.ts`");
   });
 
   it("refuses to replace a directory it did not write", async () => {
@@ -106,13 +109,30 @@ describe("laqueus export", () => {
   });
 
   it("leaves the CC breakdown out with --no-logic", async () => {
+    const project = path.join(directory, "project");
     const target = path.join(directory, "ctx");
     const { io } = fakeIo(directory);
+    const branches = Array.from({ length: 11 }, (_, index) => `  if (n === ${index}) return ${index};`).join("\n");
 
-    await expect(
-      main(["export", "-C", fixture("topology"), "-o", target, "--no-logic"], directory, undefined, io),
-    ).resolves.toBe(0);
-    expect(await readFile(path.join(target, "src/a.ts.md"), "utf8")).toContain("- Decisions: not included");
+    await cp(fixture("topology"), project, { recursive: true });
+    await writeFile(
+      path.join(project, "src/rules.ts"),
+      `export const pick = (n: number) => {\n${branches}\n  return -1;\n};\n`,
+    );
+
+    const partPage = async () => {
+      const files = await readFile(path.join(target, "_files.md"), "utf8");
+      const page = /^- `src\/rules\.ts` → `([^`]+)`$/m.exec(files)?.[1] ?? "";
+      return readFile(path.join(target, page), "utf8");
+    };
+
+    await expect(main(["export", "-C", project, "-o", target], directory, undefined, io)).resolves.toBe(0);
+    expect(await partPage()).toContain("- Decisions: 11\n  - line 2 (+1, decision)");
+
+    await expect(main(["export", "-C", project, "-o", target, "--no-logic"], directory, undefined, io)).resolves.toBe(
+      0,
+    );
+    expect(await partPage()).toContain("- Decisions: 11\n- Ways out: not included");
   });
 
   it("prints its usage", async () => {
@@ -133,9 +153,8 @@ describe("laqueus export", () => {
     const start = await readFile(path.join(target, "_index.md"), "utf8");
 
     expect(start).toContain("- Scope: server");
-    expect(await readdir(path.join(target, "src/lib/server"))).toEqual(expect.arrayContaining(["db.ts.md"]));
-    expect(await readdir(path.join(target, "src/lib"))).not.toContain("format.ts.md");
-    expect(await readdir(path.join(target, "_map"))).toEqual(["server"]);
+    expect(await readdir(path.join(target, "server"))).toEqual(["_index.md", "src-lib.md"]);
+    expect(await readdir(target)).not.toContain("client");
   });
 
   it("refuses an unknown part before scanning logic", async () => {
@@ -166,8 +185,9 @@ describe("laqueus list", () => {
         expect.objectContaining({ part: "server", label: "Server only", kind: "side" }),
       ]),
     );
-    expect(result.parts.map((p: { part: string }) => p.part)).not.toContain("test");
-    expect(result.hidden).toEqual(expect.arrayContaining([expect.objectContaining({ part: "test", kind: "side" })]));
+    expect(result.parts.map((p: { part: string }) => p.part)).not.toContain("tooling");
+    expect(result.hidden).toEqual(expect.arrayContaining([expect.objectContaining({ part: "tooling", kind: "side" })]));
+    expect(JSON.stringify(result)).not.toContain('"test"');
   });
 
   it("lists the areas inside a side", async () => {
@@ -175,17 +195,17 @@ describe("laqueus list", () => {
     const result = JSON.parse(stdout);
 
     expect(result.path).toEqual(["sveltekit-sides", "Server only"]);
-    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ part: "server/server-src" })]));
+    expect(result.parts).toEqual(expect.arrayContaining([expect.objectContaining({ part: "server/src-lib" })]));
     expect(logs.at(-1)).toContain("laqueus export <part>");
   });
 
   it("lists the files of a part with no sub-parts", async () => {
-    const { stdout, logs } = await listed(["server/server-src"]);
+    const { stdout, logs } = await listed(["server/src-lib"]);
     const result = JSON.parse(stdout);
 
     expect(result.files).toEqual(expect.arrayContaining([expect.objectContaining({ path: "src/lib/server/db.ts" })]));
     expect(result).not.toHaveProperty("parts");
-    expect(logs.at(-1)).toContain("laqueus export server/server-src");
+    expect(logs.at(-1)).toContain("laqueus export server/src-lib");
   });
 
   it("names the valid parts when one does not exist", async () => {
@@ -193,6 +213,6 @@ describe("laqueus list", () => {
 
     expect(code).toBe(1);
     expect(stdout).toBe("");
-    expect(logs.at(-1)).toBe('No part "server/nope". Inside server: server/server-src, server/src-routes.');
+    expect(logs.at(-1)).toBe('No part "server/nope". Inside server: server/src-lib.');
   });
 });

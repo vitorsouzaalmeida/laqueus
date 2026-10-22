@@ -21,7 +21,7 @@ export type Tree = {
 };
 
 export const mainSides: readonly Side[] = ["client", "shared", "server", "code"];
-export const traySides: readonly Side[] = ["unreached", "test", "tooling"];
+export const traySides: readonly Side[] = ["unreached", "tooling"];
 
 export const isTraySide = (value: unknown): value is Side => traySides.some((side) => side === value);
 

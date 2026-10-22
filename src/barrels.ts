@@ -28,7 +28,7 @@ export const barrelResolver = (
     const table = tables.get(file);
     const here = { file, name, via: [...via] };
 
-    if (!table?.barrel || name === "*" || via.includes(file)) return here;
+    if (!table || name === "*" || via.includes(file)) return here;
 
     const passing = [...via, file];
     const reexport = table.reexports.find((entry) => entry.name === name);
@@ -38,7 +38,7 @@ export const barrelResolver = (
       return next === undefined ? here : define(next, reexport.imported, passing);
     }
 
-    if (name === "default") return here;
+    if (name === "default" || table.names.includes(name)) return here;
 
     const star = table.stars
       .map((specifier) => target(file, specifier))

@@ -1,76 +1,74 @@
+import { farOut, widelyUsedShare } from "../areas";
 import {
+  type BandShares,
+  type ClassFacts,
   type CycleEdge,
+  type CycleFacts,
   type Facts,
+  type FileFacts,
   type FunctionFacts,
   type ImportRef,
+  type Layers,
+  type Rank,
   type Stats,
   branchStep,
   byText,
+  holdsInside,
   shownCuts,
 } from "../facts";
-import { ccBand, hubFloor, hubRank } from "../judgement";
+import { excessFrom, highFrom } from "../judgement";
+import { exactLimit } from "../layers";
 import { largestCut } from "../metrics";
-import { type ModuleNode, type Result, type Side, err, ok } from "../model";
+import { type ModuleNode, type Result, type Side, err, isStandaloneArea, isWidelyUsedArea, ok } from "../model";
 import { type Tree, type TreeNode, ancestry, partNames, slug } from "../tree";
-import { bullets, code, factLines, orNone, page, plural, section, table } from "./markdown";
+import {
+  bullets,
+  code,
+  factLines,
+  nested,
+  orNone,
+  page,
+  percent,
+  plural,
+  ratioText,
+  section,
+  subsection,
+} from "./markdown";
 
 export type Pages = Map<string, string>;
 
 export type PageOptions = { exportedAt: string; scope?: string };
 
-type Entry = { key: string; label: string; page: string; moduleIds: readonly string[] };
+const kindLabel = { root: "project", side: "side", area: "area", subarea: "sub-area", folder: "folder" } as const;
 
-type Part = {
-  moduleIds: readonly string[];
-  entries: readonly Entry[];
-  branchOf?: (moduleId: string) => string | undefined;
-  describeBranch: (key: string) => readonly [label: string, page: string | null];
-  noun: string;
-};
-
-const parentOf = (filePath: string) => (filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "");
-const baseName = (filePath: string) => filePath.slice(filePath.lastIndexOf("/") + 1);
-
-const prefixes = (directory: string) =>
-  directory === "" ? [""] : ["", ...directory.split("/").map((_, index, parts) => parts.slice(0, index + 1).join("/"))];
-
-const directoryPage = (directory: string) => (directory === "" ? "_index.md" : `${directory}/_index.md`);
-const filePage = (filePath: string) => `${filePath}.md`;
+const shownHigh = 50;
+const shownTop = 20;
 
 export const statsLine = (stats: Stats) =>
   [
     plural(stats.files, "file"),
     plural(stats.entryPoints, "entry point"),
     plural(stats.functions, "function"),
+    plural(stats.decisions, "decision"),
+    `excess CC ${stats.excessCC}`,
     `max CC ${orNone(stats.maxCC)}`,
     `${stats.filesInCycles} in cycles`,
     `imports ${stats.imports.internal} internal, ${stats.imports.incoming} in, ${stats.imports.outgoing} out`,
   ].join(" · ");
 
-const statsHeader = [
-  "Files",
-  "Entry points",
-  "Functions",
-  "Max CC",
-  "Files in cycles",
-  "Imports internal",
-  "Imports in",
-  "Imports out",
-];
-
-const statsCells = (stats: Stats) => [
-  stats.files,
-  stats.entryPoints,
-  stats.functions,
-  orNone(stats.maxCC),
-  stats.filesInCycles,
-  stats.imports.internal,
-  stats.imports.incoming,
-  stats.imports.outgoing,
-];
-
 const statsFacts = (stats: Stats) =>
-  factLines(statsHeader.map((label, index) => [label, statsCells(stats)[index] ?? null] as const));
+  factLines([
+    ["Files", stats.files],
+    ["Entry points", stats.entryPoints],
+    ["Functions", stats.functions],
+    ["Decisions", stats.decisions],
+    ["Excess CC", stats.excessCC],
+    ["Max CC", stats.maxCC],
+    ["Files in cycles", stats.filesInCycles],
+    ["Imports internal", stats.imports.internal],
+    ["Imports in", stats.imports.incoming],
+    ["Imports out", stats.imports.outgoing],
+  ]);
 
 const lineList = (values: readonly number[]) => `line${values.length === 1 ? "" : "s"} ${values.join(", ")}`;
 
@@ -79,113 +77,205 @@ const chain = (paths: readonly string[] | null) => (paths ? paths.map(code).join
 const callList = (refs: FunctionFacts["calls"]) =>
   refs.length === 0 ? "none" : refs.map((ref) => `${code(ref.name)} (${lineList(ref.lines)})`).join(", ");
 
+const importNote = (ref: ImportRef) =>
+  [
+    lineList(ref.lines),
+    ...(ref.via.length === 0 ? [] : [`via ${ref.via.map(code).join(", ")}`]),
+    ...(ref.typeOnly ? ["types only"] : []),
+  ].join(", ");
+
+const countedList = (refs: readonly ImportRef[]) =>
+  refs.length === 0 ? "none" : `${refs.length}\n${nested(refs.map((ref) => `${code(ref.path)} (${importNote(ref)})`))}`;
+
+const edgeText = (edge: CycleEdge) =>
+  `${code(edge.from)} → ${code(edge.to)} (${lineList(edge.lines)}: ${edge.names.map(code).join(", ")}${edge.typeOnly ? ", types only" : ""})`;
+
+const cutText = (cut: readonly CycleEdge[]) => cut.map(edgeText).join("; ");
+
+const ccText = (fn: FunctionFacts) => `CC ${fn.cc} (branches ${fn.branches})`;
+
+const rankText = (rank: Rank, side: Side, reason: string) =>
+  rank === null
+    ? `not ranked: ${reason}`
+    : `${rank.band}, P${rank.percentile} of ${plural(rank.population, `ranked ${side} file`)}`;
+
+const severityText = (cycle: CycleFacts) =>
+  `${cycle.severity.severity}: ${plural(cycle.files.length, "file")}, ${plural(cycle.severity.loops, "loop")}, ${
+    cycle.cuts[0] ? `${plural(cycle.cuts[0].length, "import")} to cut` : "no cut found"
+  }`;
+
+const searchText = (cycle: CycleFacts) =>
+  cycle.search === "all"
+    ? `every choice of up to ${plural(largestCut, "import")} was tried`
+    : cycle.search === "exact"
+      ? "fewest imports found by an exact search"
+      : "found by a heuristic, may not be the fewest";
+
+const typesText = (cycle: CycleFacts) =>
+  cycle.withoutTypes === 0
+    ? "no cycle: it exists only because of type imports"
+    : cycle.withoutTypes === cycle.files.length
+      ? "the same cycle"
+      : `${plural(cycle.withoutTypes, "file")} still in a cycle`;
+
+const shareText = (part: number, whole: number, noun: string, many = `${noun}s`) =>
+  whole === 0 ? `none (no ${many})` : `${percent(part, whole)} (${part} of ${plural(whole, noun, many)})`;
+
+const bandRange = { low: `1–${excessFrom}`, moderate: `${excessFrom + 1}–${highFrom - 1}`, high: `${highFrom}+` };
+
+const bandLines = (label: string, shares: BandShares, noun: string, many: string) =>
+  (["low", "moderate", "high"] as const).map(
+    (band) =>
+      [`${label}, ${band} band (${bandRange[band]})`, shareText(shares[band], shares.total, noun, many)] as const,
+  );
+
+const fanText = (count: number, rank: Rank, side: Side, reason: string) => `${count} (${rankText(rank, side, reason)})`;
+
 const functionSection = (fn: FunctionFacts) => {
-  const decisions = fn.logic
-    ? [
-        `- Decisions: ${fn.logic.decisions.length}`,
-        ...fn.logic.decisions.map(
-          (decision) => `  - line ${decision.line} (+${decision.weight}, ${decision.kind}): ${code(decision.label)}`,
-        ),
-        `- Ways out: ${fn.logic.waysOut}`,
-      ].join("\n")
-    : "- Decisions: not included in this export\n- Ways out: not included in this export";
-  return `### ${code(fn.name)} (line ${fn.line})\n\n${[
+  const decisions = [
+    `- Decisions: ${fn.cc === 1 ? "none" : fn.cc - 1}`,
+    fn.logic
+      ? nested(
+          fn.logic.decisions.map(
+            (decision) => `line ${decision.line} (+${decision.weight}, ${decision.kind}): ${code(decision.label)}`,
+          ),
+        )
+      : "",
+    `- Ways out: ${fn.logic ? fn.logic.waysOut : "not included in this export"}`,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+
+  return `#### ${code(fn.name)} (line ${fn.line})\n\n${[
     `- CC: ${fn.cc}`,
+    `- Branches: ${fn.branches}`,
     `- CC band: ${fn.ccBand}`,
+    ...(fn.inclusive === fn.cc ? [] : [`- Inclusive CC: ${fn.inclusive}`]),
+    ...(fn.outerWrites === 0 ? [] : [`- Outer variables written by inner functions: ${fn.outerWrites}`]),
     decisions,
     `- Calls: ${callList(fn.calls)}`,
     `- Called by: ${callList(fn.calledBy)}`,
   ].join("\n")}`;
 };
 
-const importNote = (ref: ImportRef) =>
-  `${lineList(ref.lines)}${ref.via.length === 0 ? "" : `, via ${ref.via.map(code).join(", ")}`}`;
+const classSection = (cls: ClassFacts) =>
+  `#### class ${code(cls.name)} (line ${cls.line})\n\n- Inclusive CC: ${cls.inclusive}`;
 
-const edgeText = (edge: CycleEdge) =>
-  `${code(edge.from)} → ${code(edge.to)} (${lineList(edge.lines)}: ${edge.names.map(code).join(", ")})`;
+const pairsOf = (module: ModuleNode) => module.metrics.visibilityFanIn * module.metrics.visibilityFanOut;
 
-const cutText = (cut: readonly CycleEdge[]) => cut.map(edgeText).join("; ");
+const more = (count: number, shown: number, where: string) =>
+  count > shown ? `\n- And ${count - shown} more ${where}.` : "";
 
-const percent = (count: number, total: number) => (total === 0 ? "0%" : `${((count / total) * 100).toFixed(1)}%`);
-
-const nearestRank = (sorted: readonly number[], p: number) =>
-  sorted.length === 0 ? null : (sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)] ?? null);
-
-const ratioText = (value: number | null) => (value === null ? "none" : value.toFixed(2));
-
-const shownHigh = 50;
+const widelyUsedText = `Files imported by at least ${widelyUsedShare * 100}% of the files of their side and far more than the rest: their fan-in is above the side's third quartile plus ${farOut} times the interquartile range, counted as at least 1 (Tukey's far-out values). They are set aside before the areas are found and kept together here, as Bunch does with omnipresent modules (https://doi.org/10.1109/ICSM.1999.792498), so imports of them do not pull areas together.`;
 
 const definitions: readonly (readonly [string, string])[] = [
   [
+    "Scope",
+    "Test files are not scanned: names with .test., .spec. or .stories., and folders named test, tests, __tests__, __mocks__, __fixtures__ or e2e. Imports of test files are left out too.",
+  ],
+  [
+    "Parts",
+    "The project is split the way `laqueus list` and the viewer split it: by side, then by area and sub-area (client, shared, server and code sides) or by folder (the other sides). Every part has a page, named like the part: `server/_index.md` for the server side, `server/src-lib.md` for an area. A part with sub-parts has an `_index.md` in a folder of its name.",
+  ],
+  [
     "CC",
-    "Cyclomatic complexity of one function: 1, plus 1 for each if, loop (for, for-in, for-of, while, do-while), catch, ternary, && / ||, case with a test and logical assignment (&&=, ||=). Checks for undefined values add nothing: optional chains (?.), ?? and ??=, and default values. Nested functions and classes are measured on their own.",
+    `Cyclomatic complexity of one function: 1, plus 1 for each branch and each condition. Branches: if, loop (for, for-in, for-of, while, do-while), catch, ternary, case with a test, and in Svelte templates {#if}, {:else if}, {#each}, {#await} and {:catch}. Conditions: && and ||, and the logical assignments &&= and ||=. Checks for undefined values add nothing: optional chains (?.), ?? and ??=, and default values. Inner functions, classes and Svelte snippets are measured on their own.`,
+  ],
+  [
+    "Branches",
+    "CC counting branches only, without conditions, as Myers suggested in 1977: a function made of one long condition reads as one list of cases, not as a tangle of ifs. Written next to CC, as `CC 31 (branches 2)`. Bands, Max CC and excess CC use CC, not branches.",
+  ],
+  [
+    "Inclusive CC",
+    "1 plus the decisions of a function and of every function inside it. Shown only where it differs from CC. A class's inclusive CC is 1 plus the decisions of all its methods and field initialisers.",
+  ],
+  [
+    "Outer variables written by inner functions",
+    "Variables a function declares with let or var, or receives as parameters, that its inner functions assign to (=, compound assignment, ++, --, destructuring). State changed through an object's properties is not counted. A function with many of them is a class written as a function.",
   ],
   [
     "Function names",
-    "A function passed to a call is named after the function holding it and the call, e.g. `load › db.transaction callback`; other unnamed functions are `<anonymous>@<line>`, also prefixed by the function holding them.",
+    "Inner functions are prefixed with the function holding them: `load › db.transaction callback`, `build › format`. Other unnamed functions are `<anonymous>@<line>`. A Svelte component's markup is one function named `<template>`, a snippet is `<template> › name`, and an inline handler is named after its attribute, e.g. `<template> › onclick callback`. Names can repeat within a file; the line tells them apart.",
   ],
   ["Max CC", "Highest CC among the functions of a file, or of every file in a part. none when there is no function."],
-  ["Mean CC", "Mean CC of the functions of a file, rounded to two decimals. none when there is no function."],
-  ["Decisions", "The steps of a function that add to its CC, each with how much it adds. CC equals 1 plus their sum."],
+  [
+    "Decisions",
+    "CC minus 1, summed over functions: the number of branch points. Each function's own decisions are counted once.",
+  ],
+  [
+    "Excess CC",
+    `max(0, CC − ${excessFrom}) summed over functions. Zero for code within McCabe's threshold of ${excessFrom}; it says how much branching sits above it. Unlike a mean, adding a trivial function does not change it.`,
+  ],
   ["Ways out", "Points where a function can end: each return, each throw, and the end of its body."],
   [
     "Calls, Called by",
     "Calls between functions of the same file that the scan could resolve. Calls across files are not tracked.",
   ],
   [
-    "Fan-in",
-    "Number of distinct project files that import this file, not counting test files and the file itself. An import from a barrel counts against the file that defines the imported name.",
+    "Imports",
+    "Local imports, counted once per importing file and imported file however many statements join them. Type-only imports count too, and are marked `types only`: when a type changes, every file that imports it must be checked. Sides use only the imports that run. A name imported through a file that re-exports it (export … from, export *, or import then export) counts against the file that declares it, and is listed with `via` and the files it passed through. A whole-module import (import * as, import(), side-effect import) stays on the file it names.",
   ],
-  ["Test fan-in", "Number of distinct test files that import this file."],
-  [
-    "Fan-out",
-    "Number of distinct project files this file imports, not counting itself. An import from a barrel counts against the file that defines the imported name.",
-  ],
+  ["Fan-in", "Number of distinct files that import this file, not counting itself."],
+  ["Fan-out", "Number of distinct files this file imports, not counting itself."],
   [
     "Barrel",
-    "A file that only re-exports names from other files (export … from, export *, or import then export), with no code of its own. Imports of a name through a barrel are followed to the file that defines it, and are listed with `via` and the barrel. A whole-module import (import * as, import(), side-effect import) stays on the barrel. Sides are found from the imports as written, since SvelteKit loads everything a barrel re-exports.",
+    "A file that only re-exports names from other files, with no code of its own. Barrels are not ranked by fan-in or fan-out. Sides follow imports as written, so a barrel still places what it re-exports, as SvelteKit loads all of it.",
+  ],
+  [
+    "Visibility fan-in, Visibility fan-out",
+    "How many files reach this one through imports, directly or through others, and how many it reaches; the file itself is counted. Measured on all files with value and type imports (MacCormack, Rusnak and Baldwin, 2006).",
+  ],
+  [
+    "Role",
+    "Visibility fan-in and fan-out compared with the medians of the file's side; high means strictly above the median. Central: both high. Shared: many depend on it, it depends on little. Control: it depends on much, few depend on it. Peripheral: both low (Baldwin, MacCormack and Rusnak, 2014).",
+  ],
+  [
+    "File pairs passing through",
+    "Visibility fan-in × visibility fan-out: the number of pairs of files whose dependency can pass through this file or cycle.",
   ],
   [
     "Imports internal, Imports in, Imports out",
-    "Import edges, counted once per importing file and imported file however many statements join them; type-only imports are ignored. Internal: both files inside the part. In: from a file outside to one inside. Out: from a file inside to one outside.",
-  ],
-  ["Imports between entries", "Import edges from one entry of a part's contents to another, counted as above."],
-  [
-    "Imports crossing",
-    "Import edges between a part and the rest of the project, grouped where the outside file branches off the part's path: a sibling directory or file, or a sibling node of the map. Outgoing: from the part to it. Incoming: from it into the part.",
+    "Imports with both files inside the part, from a file outside to one inside, and from a file inside to one outside.",
   ],
   [
     "Cycle",
-    "Files that import each other in a loop, found as strongly connected components with Tarjan's algorithm. A file that imports itself is a cycle of one. Cycles are numbered from 1 in the order of their first file path.",
+    "Two or more files that import each other in a loop, found as strongly connected components. A file that imports itself is not a cycle; outside a Svelte component it is reported as a warning. Cycles are numbered from 1 in the order of their first file path.",
   ],
   [
-    "Island",
-    "Weakly connected component of the import graph: files linked by imports in either direction, with no import between two islands. Numbered from 0.",
+    "Cycle severity",
+    "Size of the cycle: minor (2 files), moderate (3–5), severe (6+). Each file of a cycle reaches all the others.",
   ],
+  [
+    "Loops",
+    "Independent loops of a cycle: imports inside it − files + 1. A ring has 1, and each extra import adds one.",
+  ],
+  [
+    "Smallest cut",
+    `The fewest imports inside a cycle whose removal leaves no cycle among its files. Every choice of up to ${largestCut} imports is listed, fewest imported names first, at most ${shownCuts}. When none is that small, one cut is searched: exactly for up to ${exactLimit} files, otherwise with the Eades–Lin–Smyth heuristic, putting back every removed import that does not recreate a cycle.`,
+  ],
+  ["Without type imports", "How many of a cycle's files are still in a cycle when only the imports that run are kept."],
   [
     "Side",
-    "Where a file runs, found by walking imports from the SvelteKit entry points. The sides and their meaning are listed in _index.md.",
+    "Where a file runs, found by walking imports that run from the SvelteKit entry points. The sides are listed in _index.md.",
   ],
   [
     "Area, Sub-area",
-    "Groups of files found with the Louvain method on the import graph, stopped after two levels. Files in the same folder get a weak extra link. Each area is named after the folder most of its files live in. Internal imports: imports with both files in the area. Touching imports: imports with at least one file in it and the other in some area; imports from tests, tooling and unreached files are left out.",
+    "Groups of files of one side found with the Louvain method on the imports between them, stopped after two levels. Files in the same folder get a weak extra link: in a folder of k files each pair gets 1/(k − 1), so every file's folder links add up to 1, the weight of one import. Each area is named after the folder most of its files live in. Internal imports: both files in the area. Touching imports: at least one file in the area and the other in an area of the same side.",
   ],
+  ["Widely used files", widelyUsedText],
   [
     "Cohesion",
     "Internal imports divided by touching imports, from 0 to 1. Higher means the area mostly imports itself.",
   ],
   [
     "Instability",
-    "Imports from the area to other areas divided by all imports between the area and other areas (in + out), from 0 to 1. 0: other areas depend on it and it depends on none (stable). 1: it depends on others and none depend on it (unstable).",
+    "Imports from the area to other areas of its side divided by all imports between it and them (in + out), from 0 to 1. 0: others depend on it and it depends on none. 1: it depends on others and none depend on it.",
   ],
   [
-    "Area cycle",
-    "Top-level areas that import each other in a loop, found as strongly connected components of the graph of imports between areas. Numbered from 1 in the order of their first area label.",
+    "Layer order",
+    `The order of a side's areas with the fewest imports pointing back, from the areas that import the others to the areas they build on. An import points back when it goes from an area to one earlier in the order. Found exactly for up to ${exactLimit} areas, with the Eades–Lin–Smyth heuristic above; ties are broken by the fewest imported names, then by name.`,
   ],
-  [
-    "Stable area depending on a less stable one",
-    "An import from area A to area B where A's instability is lower than B's. Stable code is expected to depend on code that is at least as stable; an import the other way makes the stable area change when the unstable one does.",
-  ],
+  ["Two-way dependency", "Two areas of the same side that import each other, with the imports each way."],
   [
     "Entry point",
     "A file SvelteKit loads itself (pages, layouts, endpoints, hooks…), or, outside a SvelteKit app, a file no other file imports.",
@@ -200,63 +290,41 @@ const definitions: readonly (readonly [string, string])[] = [
   ],
   [
     "CC band",
-    "Fixed thresholds on cyclomatic complexity: low (1–10), moderate (11–15), high (16+). These do not change with project size.",
+    `Fixed thresholds on cyclomatic complexity: low (1–${excessFrom}), moderate (${excessFrom + 1}–${highFrom - 1}), high (${highFrom}+). These do not change with project size.`,
   ],
-  ["Max CC band", "The CC band of a file's highest-complexity function. none when the file has no functions."],
   [
     "Fan-in band, Fan-out band",
-    "Percentile rank of a file's fan-in or fan-out among the files of its own side (client, shared, server…). The percentile is floor(100 × count of files of the side with a strictly lower value / files of the side). Bands: low (below P75), moderate (P75–P89), high (P90–P94), extreme (P95+). The thresholds adapt to each project and side.",
+    "Percentile rank of a file's fan-in or fan-out among the ranked files of its side: floor(100 × ranked files with a strictly lower value / ranked files). Bands: low (below P75), moderate (P75–P89), high (P90–P94), extreme (P95+). Entry points are not ranked by fan-in, since nothing imports them, and barrels are not ranked at all.",
   ],
   [
-    "Hub",
-    `A file in the top quartile of both fan-in and fan-out within its side (percentile rank ≥ ${hubRank} on both), with at least ${hubFloor} of each. Barrels are never hubs. It depends on many files and many files depend on it.`,
-  ],
-  [
-    "Cycle severity",
-    "Size of the strongly connected component: minor (≤ 2 files), moderate (3–5), severe (6+). Larger cycles are harder to break.",
-  ],
-  [
-    "Density",
-    "Directed import edges inside a cycle divided by the maximum possible (size × (size − 1)), excluding self-imports. Ranges from 0 to 1; higher means more tangled.",
-  ],
-  [
-    "Smallest cut",
-    `The fewest imports inside a cycle whose removal leaves no cycle among its files, each with the names it imports. Every choice of that size is listed, fewest imported names first, at most ${shownCuts}. Only cuts of up to ${largestCut} imports are searched.`,
-  ],
-  [
-    "Median CC, P90 CC, P95 CC, P99 CC",
-    "Nearest-rank percentiles of the CC of the functions in the export: the smallest CC that at least that share of functions do not exceed.",
+    "Share of decisions in a band",
+    `The decisions of the functions in a CC band, as a share of all decisions of the side. Given twice: counting conditions (CC) and branches only, each function placed in the band of that count.`,
   ],
   ["Lines", "Lines are 1-based."],
 ];
 
-const scaleLine = (label: string, scale: ReturnType<Facts["scaleOf"]>["fanIn"]): string => {
-  const { cutoffs, population } = scale;
-  const parts: string[] = [];
-  if (cutoffs.moderate !== null) parts.push(`moderate from ${cutoffs.moderate}`);
-  if (cutoffs.high !== null) parts.push(`high from ${cutoffs.high}`);
-  if (cutoffs.extreme !== null) parts.push(`extreme from ${cutoffs.extreme}`);
-  return parts.length > 0
-    ? `- ${label}: ${parts.join(", ")} (of ${plural(population, "file")})`
-    : `- ${label}: all values equal`;
-};
-
-const judgementSection = (facts: Facts, modules: readonly ModuleNode[]): string => {
-  const hubs = modules.filter((m) => facts.file(m).bands.hub).map((m) => m.path);
-  const sides = facts.data.lanes
-    .map((lane) => lane.side)
-    .filter((side) => modules.some((module) => module.placement.side === side));
-  return [
-    "- CC bands: low 1–10, moderate 11–15, high 16+ (fixed thresholds)",
-    ...sides.flatMap((side: Side) => [
-      scaleLine(`Fan-in, ${side}`, facts.scaleOf(side).fanIn),
-      scaleLine(`Fan-out, ${side}`, facts.scaleOf(side).fanOut),
-    ]),
-    `- Hub rule: percentile rank ≥ ${hubRank} on both fan-in and fan-out within the side, at least ${hubFloor} of each, not a barrel`,
-    `- Hubs: ${hubs.length === 0 ? "none" : hubs.map(code).join(", ")}`,
-    `- Cycle severity: minor (≤2 files), moderate (3–5), severe (6+)`,
-  ].join("\n");
-};
+const healthNotes: readonly (readonly [string, string])[] = [
+  [
+    "Propagation cost",
+    "The mean share of the side's files that one file reaches through imports between the side's own files, itself included (MacCormack, Rusnak and Baldwin, 2006). It is the average share of files a change can reach. In that paper, Mozilla went from 17.35% to 2.78% after its redesign. The lowest possible value is 1 divided by the number of files, so compare only sides of similar size.",
+  ],
+  [
+    "Largest cycle",
+    "The files of the largest import cycle as a share of the side. A small share means the code is mostly layered.",
+  ],
+  [
+    "Imports pointing back",
+    "The share of imports between the side's areas that go against the best layer order (see Layer order in `_definitions.md`). 0% is perfectly layered.",
+  ],
+  [
+    "Complex decisions",
+    `The share of the side's decisions that sit in functions above CC ${excessFrom}, counting conditions and counting branches only.`,
+  ],
+  [
+    "Modularity",
+    "Computed on the imports between the side's files, for the areas and for the files grouped by their own folder (Newman and Girvan, 2004). Folders are a fixed grouping, so above about 0.3 means they follow the dependencies. Areas are chosen to maximise modularity, which finds high values even in random graphs (Guimerà, Sales-Pardo and Amaral, 2004), so read the areas' value against the folders', not against 0.3.",
+  ],
+];
 
 export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Result<Pages> => {
   const { data } = facts;
@@ -276,26 +344,34 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
     pages.set(path, content);
   };
 
-  const modulesByPath = new Map(data.modules.map((module) => [module.path, module]));
   const laneLabel = new Map(data.lanes.map((lane) => [lane.side, lane.label]));
+  const sideLabel = (side: Side) => laneLabel.get(side) ?? side;
+  const node = (id: string) => tree.nodes.get(id);
+  const inPart = (id: string) => !scopeNode || ancestry(tree, id).includes(scopeNode.id);
+  const pageOf = (id: string) => {
+    const found = node(id);
+    const name = names.get(id) ?? "";
 
-  const areaLines = (id: string): (readonly [string, string | number | null])[] => {
-    const area = data.areas.find((candidate) => candidate.id === id);
-    const coupling = facts.areaFacts.get(id);
+    if (!found || found.kind === "root") return "_index.md";
 
-    return area && coupling
-      ? [
-          ["Internal imports", area.internalImports],
-          ["Touching imports", area.touchingImports],
-          ["Cohesion", ratioText(coupling.cohesion)],
-          ["Instability", ratioText(coupling.instability)],
-          ["Imports from other areas", coupling.incoming],
-          ["Imports to other areas", coupling.outgoing],
-          ...(area.parent === null
-            ? ([["Area cycle", coupling.cycle === null ? null : `#${coupling.cycle}`]] as const)
-            : []),
-        ]
-      : [];
+    return found.children.length > 0 ? `${name}/_index.md` : `${name}.md`;
+  };
+  const trail = (id: string) =>
+    ancestry(tree, id)
+      .slice(1)
+      .flatMap((step) => node(step)?.label ?? [])
+      .join(" › ");
+  const partOf = (moduleId: string) => tree.pathOf.get(moduleId)?.at(-1);
+  const partRef = (id: string) =>
+    inPart(id) ? `${code(pageOf(id))} (${trail(id)})` : `${trail(id)} (not in this export)`;
+  const filePageOf = (path: string) => {
+    const part = partOf(`module:${path}`);
+    return part !== undefined && inPart(part) ? code(pageOf(part)) : "not in this export";
+  };
+  const areaName = (id: string) => code(facts.areaLabelOf(id));
+  const areaPage = (id: string) => {
+    const found = [...tree.nodes.values()].find((candidate) => candidate.area?.id === id);
+    return found ? partRef(found.id) : "no page";
   };
 
   const cyclesTouching = (moduleIds: readonly string[], noun: string) => {
@@ -308,307 +384,222 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
           const here = cycle.files.filter((file) => inside.has(file)).length;
           const where =
             here === cycle.files.length ? `all in this ${noun}` : `${here} of ${cycle.files.length} in this ${noun}`;
-          return `Cycle #${cycle.number} (${where}): ${cycle.files.map(code).join(", ")}`;
+          return `Cycle #${cycle.number} (${where}), ${severityText(cycle)}: ${cycle.files.map(code).join(", ")}`;
         }),
     );
   };
 
-  const partSections = (part: Part) => {
-    const childOf = new Map(part.entries.flatMap((entry) => entry.moduleIds.map((id) => [id, entry.label] as const)));
-    const crossings = part.branchOf ? facts.crossings(part.moduleIds, part.branchOf) : null;
+  const packageLines = (moduleIds: readonly string[]) =>
+    bullets(facts.packages(moduleIds).map((entry) => `${code(entry.name)}: ${plural(entry.files, "file")}`));
 
-    return [
-      section("Summary", statsFacts(facts.stats(part.moduleIds))),
-      section(
-        "Contents",
-        table(
-          ["Entry", "Page", ...statsHeader],
-          part.entries.map((entry) => [
-            code(entry.label),
-            code(entry.page),
-            ...statsCells(facts.stats(entry.moduleIds)),
-          ]),
-        ),
-      ),
-      section(
-        "Imports between entries",
-        table(
-          ["From", "To", "Imports"],
-          facts.links(childOf).map((link) => [code(link.from), code(link.to), link.imports]),
-        ),
-      ),
-      ...(crossings
-        ? [
-            section(
-              `Imports crossing this ${part.noun}`,
-              table(
-                ["Other part", "Page", `Outgoing (this ${part.noun} → it)`, `Incoming (it → this ${part.noun})`],
-                crossings.map((crossing) => {
-                  const [label, target] = part.describeBranch(crossing.key);
-                  return [
-                    label,
-                    target === null ? "not in this export" : code(target),
-                    crossing.outgoing,
-                    crossing.incoming,
-                  ];
-                }),
-              ),
-            ),
-          ]
-        : []),
-      section(
-        "Packages",
-        table(
-          ["Package", "Files"],
-          facts.packages(part.moduleIds).map((entry) => [code(entry.name), entry.files]),
-        ),
-      ),
-      section("Cycles", cyclesTouching(part.moduleIds, part.noun)),
-    ];
+  const areaLines = (id: string): (readonly [string, string | number | null])[] => {
+    const coupling = facts.areaFacts.get(id);
+
+    return coupling
+      ? [
+          ["Touching imports", coupling.touching],
+          ["Cohesion", ratioText(coupling.cohesion)],
+          ["Instability", ratioText(coupling.instability)],
+          ["Imports from other areas", coupling.incoming],
+          ["Imports to other areas", coupling.outgoing],
+        ]
+      : [];
   };
 
-  type Directory = { path: string; directories: Set<string>; files: ModuleNode[]; moduleIds: string[] };
-  const directories = new Map<string, Directory>();
-  const directory = (path: string): Directory => {
-    const found = directories.get(path);
-
-    if (found) return found;
-
-    const created: Directory = { path, directories: new Set(), files: [], moduleIds: [] };
-    directories.set(path, created);
-    return created;
-  };
-
-  modules.forEach((module) => {
-    const steps = prefixes(parentOf(module.path));
-    steps.forEach((step, index) => {
-      const current = directory(step);
-      const next = steps.at(index + 1);
-      current.moduleIds.push(module.id);
-      if (next !== undefined) current.directories.add(next);
-    });
-    directory(parentOf(module.path)).files.push(module);
-  });
-
-  if (modules.length === 0) directory("");
-
-  const directoryEntries = (current: Directory): Entry[] => [
-    ...[...current.directories].toSorted(byText).map((path) => ({
-      key: path,
-      label: `${baseName(path)}/`,
-      page: directoryPage(path),
-      moduleIds: directories.get(path)?.moduleIds ?? [],
-    })),
-    ...current.files
-      .toSorted((a, b) => byText(a.path, b.path))
-      .map((module) => ({
-        key: module.path,
-        label: baseName(module.path),
-        page: filePage(module.path),
-        moduleIds: [module.id],
-      })),
-  ];
-
-  const directoryPart = (current: Directory): Part => {
-    const trail = prefixes(current.path);
-
-    return {
-      moduleIds: current.moduleIds,
-      entries: directoryEntries(current),
-      branchOf:
-        current.path === ""
-          ? undefined
-          : (id) => {
-              const module = facts.modules.get(id);
-              return module && branchStep(trail, [...prefixes(parentOf(module.path)), module.path]);
-            },
-      describeBranch: (key) =>
-        modulesByPath.has(key)
-          ? [code(key), includedPaths.has(key) ? filePage(key) : null]
-          : [code(`${key}/`), directories.has(key) ? directoryPage(key) : null],
-      noun: "directory",
-    };
-  };
-
-  directories.forEach((current) => {
-    if (current.path === "") return;
-
-    const stats = facts.stats(current.moduleIds);
-    add(
-      directoryPage(current.path),
-      page(`${current.path}/: ${statsLine(stats)}`, `${current.path}/`, ...partSections(directoryPart(current))),
-    );
-  });
-
-  modules.forEach((module) => {
-    const file = facts.file(module);
-    const functions = facts.functionsOf(module.id);
-    const cycle = facts.cycles.find((candidate) => candidate.number === file.cycle);
-    const warnings = facts.diagnostics.filter((diagnostic) => diagnostic.file === file.path);
-    const l0 = [
-      `${file.path}: ${file.side}`,
-      plural(file.functionCount, "function"),
-      `max CC ${orNone(file.maxCC)}`,
-      `mean CC ${orNone(file.meanCC)}`,
-      `fan-in ${file.fanIn}`,
-      `fan-out ${file.fanOut}`,
-      file.cycle === null ? "no cycle" : `cycle #${file.cycle}`,
-    ].join(" · ");
-    const importList = (refs: typeof file.imports) =>
-      bullets(refs.map((ref) => `${code(ref.path)} (${importNote(ref)})`));
-
-    add(
-      filePage(file.path),
-      page(
-        l0,
-        file.path,
-        section(
-          "Facts",
-          factLines([
-            ["Side", `${file.side} (${laneLabel.get(file.side) ?? file.side})`],
-            ["Area", file.area],
-            ["Sub-area", file.subArea],
-            ["Entry point", file.entry],
-            ["Reason", file.reason],
-            ["Reached on the client", chain(file.chains.client)],
-            ["Reached on the server", chain(file.chains.server)],
-            ["Barrel", file.barrel ? "yes" : "no"],
-            ["Fan-in", file.fanIn],
-            [
-              "Fan-in band",
-              `${file.bands.fanInBand} (P${file.bands.fanInPercentile} of ${file.bands.population} ${file.side} files)`,
-            ],
-            ["Test fan-in", file.testFanIn],
-            ["Fan-out", file.fanOut],
-            [
-              "Fan-out band",
-              `${file.bands.fanOutBand} (P${file.bands.fanOutPercentile} of ${file.bands.population} ${file.side} files)`,
-            ],
-            ["Functions", file.functionCount],
-            ["Max CC", file.maxCC],
-            ["Max CC band", file.bands.maxCcBand],
-            ["Mean CC", file.meanCC],
-            [
-              "Cycle",
-              cycle
-                ? `#${cycle.number} (${
-                    cycle.files
-                      .filter((other) => other !== file.path)
-                      .map(code)
-                      .join(", ") || "imports itself"
-                  })`
-                : null,
-            ],
-            ["Island", file.island],
-            ["Hub", file.bands.hub ? "yes" : "no"],
-            ["Packages", file.packages.length === 0 ? null : file.packages.map(code).join(", ")],
-          ]),
-        ),
-        section("Imports", importList(file.imports)),
-        section("Imported by", importList(file.importedBy)),
-        section(
-          "Functions",
-          [
-            table(
-              ["Function", "Line", "CC", "CC band", "Calls", "Called by"],
-              functions.map((fn) => [code(fn.name), fn.line, fn.cc, fn.ccBand, fn.calls.length, fn.calledBy.length]),
-            ),
-            ...functions.map(functionSection),
-          ].join("\n\n"),
-        ),
-        section(
-          "Warnings",
-          table(
-            ["Line", "Kind", "Message"],
-            warnings.map((warning) => [orNone(warning.line), warning.kind, warning.message]),
-          ),
-        ),
-      ),
-    );
-  });
-
-  const mapPage = (id: string) => {
-    const name = names.get(id) ?? "";
-    return name === "" ? "_map/_index.md" : `_map/${name}/_index.md`;
-  };
-  const inMap = (id: string) => !scopeNode || ancestry(tree, id).includes(scopeNode.id);
-  const mapTrail = (id: string) =>
-    ancestry(tree, id)
-      .flatMap((step) => tree.nodes.get(step)?.label ?? [])
-      .join(" › ");
-
-  const nodeDescription = (node: TreeNode) => {
-    switch (node.kind) {
+  const description = (part: TreeNode) => {
+    switch (part.kind) {
       case "root":
-        return "The whole project, grouped the way the Laqueus viewer does: by side, then by area and sub-area. Every side is included, also those the viewer hides by default.";
+        return "The whole project.";
       case "side":
-        return data.lanes.find((lane) => lane.side === node.side)?.description ?? "";
+        return data.lanes.find((lane) => lane.side === part.side)?.description ?? "";
       case "folder":
         return "Files in this folder. Small subfolders are merged into their parent.";
       default:
-        return node.area?.id === "area:standalone"
-          ? "Files that neither import nor are imported by another file, and have no folder mates."
-          : "Files that mostly import each other, grouped by the Louvain method and named after the folder that holds most of them.";
+        if (part.area && isWidelyUsedArea(part.area.id)) return widelyUsedText;
+
+        return part.area && isStandaloneArea(part.area.id)
+          ? "Files that import no other file of this side, apart from widely used files, and are imported by none."
+          : "Files that mostly import each other, grouped by the Louvain method within this side and named after the folder that holds most of them.";
     }
   };
 
-  tree.nodes.forEach((node) => {
-    if (!inMap(node.id)) return;
+  const about = (part: TreeNode) =>
+    [
+      factLines([
+        ["Part", names.get(part.id) ?? ""],
+        ["Kind", kindLabel[part.kind]],
+        ...(part.side === null ? [] : ([["Side", part.side]] as const)),
+      ]),
+      statsFacts(facts.stats(part.moduleIds)),
+      ...(part.area ? [factLines(areaLines(part.area.id))] : []),
+      description(part),
+    ].join("\n\n");
 
-    const children = node.children.flatMap((id) => tree.nodes.get(id) ?? []);
-    const entries: Entry[] =
-      children.length > 0
-        ? children.map((child) => ({
-            key: child.id,
-            label: child.label,
-            page: mapPage(child.id),
-            moduleIds: child.moduleIds,
-          }))
-        : node.moduleIds
-            .flatMap((id) => facts.modules.get(id) ?? [])
-            .toSorted((a, b) => byText(a.path, b.path))
-            .map((module) => ({
-              key: module.id,
-              label: module.path,
-              page: filePage(module.path),
-              moduleIds: [module.id],
-            }));
-    const trail = ancestry(tree, node.id);
-    const stats = facts.stats(node.moduleIds);
-    const kind = { root: "map", side: "side", area: "area", subarea: "sub-area", folder: "folder" }[node.kind];
+  const layerLines = (layers: Layers, limit: number) =>
+    [
+      factLines([
+        ["Layer order", layers.order.map(areaName).join(", ")],
+        [
+          "Imports pointing back",
+          shareText(layers.back.length, layers.between, "import between areas", "imports between areas"),
+        ],
+        ["Search", layers.approximate ? "heuristic, may not be the fewest" : "exact"],
+      ]),
+      ...(layers.back.length === 0
+        ? []
+        : [
+            `${bullets(layers.back.slice(0, limit).map(edgeText))}${
+              layers.back.length > limit ? `\n- And ${layers.back.length - limit} more in \`_areas.md\`.` : ""
+            }`,
+          ]),
+    ].join("\n\n");
 
-    add(
-      mapPage(node.id),
-      page(
-        `${node.kind === "root" ? `Map of ${data.name}` : mapTrail(node.id)}: ${statsLine(stats)}`,
-        node.kind === "root" ? `Map of ${data.name}` : mapTrail(node.id),
-        section(
-          "About",
-          [
-            factLines([
-              ["Kind", kind],
-              ...(node.side === null ? [] : ([["Side", node.side]] as const)),
-              ...(node.area ? areaLines(node.area.id) : []),
-            ]),
-            nodeDescription(node),
-          ].join("\n\n"),
-        ),
-        ...partSections({
-          moduleIds: node.moduleIds,
-          entries,
-          branchOf:
-            node.kind === "root" ? undefined : (id) => branchStep(trail, [...(tree.pathOf.get(id) ?? ["root"]), id]),
-          describeBranch: (key) => {
-            const module = facts.modules.get(key);
-            return module
-              ? [code(module.path), includedPaths.has(module.path) ? filePage(module.path) : null]
-              : [mapTrail(key), inMap(key) ? mapPage(key) : null];
-          },
-          noun: kind,
-        }),
-      ),
+  const indexPage = (part: TreeNode) => {
+    const children = part.children.flatMap((id) => node(id) ?? []);
+    const childOf = new Map(children.flatMap((child) => child.moduleIds.map((id) => [id, child.label] as const)));
+    const steps = ancestry(tree, part.id);
+    const crossings = facts.crossings(part.moduleIds, (id) =>
+      branchStep(steps, [...(tree.pathOf.get(id) ?? ["root"]), id]),
     );
+    const layers = part.kind === "side" ? facts.layers.find((entry) => entry.side === part.side) : undefined;
+
+    return page(
+      `${trail(part.id)}: ${statsLine(facts.stats(part.moduleIds))}`,
+      trail(part.id),
+      about(part),
+      section(
+        "Parts",
+        bullets(children.map((child) => `${partRef(child.id)}: ${statsLine(facts.stats(child.moduleIds))}`)),
+      ),
+      section(
+        "Imports between parts",
+        bullets(
+          facts
+            .links(childOf)
+            .map((link) => `${code(link.from)} → ${code(link.to)}: ${plural(link.imports, "import")}`),
+        ),
+      ),
+      ...(layers ? [section("Layers", layerLines(layers, 10))] : []),
+      section(
+        "Imports with the rest of the project",
+        bullets(
+          crossings.map(
+            (crossing) => `${partRef(crossing.key)}: ${crossing.outgoing} out to it, ${crossing.incoming} in from it`,
+          ),
+        ),
+      ),
+      section("Packages", packageLines(part.moduleIds)),
+      section("Cycles", cyclesTouching(part.moduleIds, kindLabel[part.kind])),
+    );
+  };
+
+  const fileSection = (module: ModuleNode) => {
+    const file: FileFacts = facts.file(module);
+    const functions = facts.functionsOf(module.id);
+    const notable = functions.filter((fn) => fn.ccBand !== "low" || holdsInside(fn));
+    const classes = facts.classesOf(module.id).filter((cls) => cls.inclusive >= highFrom);
+    const cycle = facts.cycles.find((candidate) => candidate.number === file.cycle);
+    const warnings = facts.diagnostics.filter((diagnostic) => diagnostic.file === file.path);
+
+    return [
+      subsection(
+        code(file.path),
+        factLines([
+          ["Entry point", file.entry],
+          ...(data.framework === null
+            ? []
+            : ([
+                ["Reached on the client", chain(file.chains.client)],
+                ["Reached on the server", chain(file.chains.server)],
+              ] as const)),
+          ["Barrel", file.barrel ? "yes" : "no"],
+          ["Fan-in", fanText(file.fanIn, file.fanInRank, file.side, file.barrel ? "barrel" : "entry point")],
+          ["Fan-out", fanText(file.fanOut, file.fanOutRank, file.side, "barrel")],
+          ["Visibility fan-in", file.visibility.fanIn],
+          ["Visibility fan-out", file.visibility.fanOut],
+          ["Role", file.visibility.role],
+          ["Functions", file.functionCount],
+          ["Functions above CC 10", notable.filter((fn) => fn.ccBand !== "low").length],
+          ["Decisions", file.decisions],
+          ["Excess CC", file.excessCC],
+          ["Max CC", file.maxCC === null ? null : `${file.maxCC} (${file.maxCcBand ?? "none"})`],
+          [
+            "Cycle",
+            cycle
+              ? `#${cycle.number} (${cycle.files
+                  .filter((other) => other !== file.path)
+                  .map(code)
+                  .join(", ")})`
+              : null,
+          ],
+          ["Packages", file.packages.length === 0 ? null : file.packages.map(code).join(", ")],
+          ["Imports", countedList(file.imports)],
+          ["Imported by", countedList(file.importedBy)],
+          ...(warnings.length === 0
+            ? []
+            : ([
+                [
+                  "Warnings",
+                  `${warnings.length}\n${nested(
+                    warnings.map((warning) => `line ${orNone(warning.line)}, ${warning.kind}: ${warning.message}`),
+                  )}`,
+                ],
+              ] as const)),
+        ]),
+      ),
+      ...notable.map(functionSection),
+      ...classes.map(classSection),
+    ].join("\n\n");
+  };
+
+  const leafPage = (part: TreeNode) => {
+    const crossings = facts.crossings(part.moduleIds, partOf).toSorted((a, b) => byText(pageOf(a.key), pageOf(b.key)));
+    const members = part.moduleIds
+      .flatMap((id) => facts.modules.get(id) ?? [])
+      .toSorted((a, b) => byText(a.path, b.path));
+
+    return page(
+      `${trail(part.id)}: ${statsLine(facts.stats(part.moduleIds))}`,
+      trail(part.id),
+      about(part),
+      section(
+        "Depends on",
+        bullets(
+          crossings
+            .filter((crossing) => crossing.outgoing > 0)
+            .map((crossing) => `${partRef(crossing.key)}: ${plural(crossing.outgoing, "import")}`),
+        ),
+      ),
+      section(
+        "Used by",
+        bullets(
+          crossings
+            .filter((crossing) => crossing.incoming > 0)
+            .map((crossing) => `${partRef(crossing.key)}: ${plural(crossing.incoming, "import")}`),
+        ),
+      ),
+      section("Packages", packageLines(part.moduleIds)),
+      section("Cycles", cyclesTouching(part.moduleIds, kindLabel[part.kind])),
+      section("Files", members.map(fileSection).join("\n\n")),
+    );
+  };
+
+  tree.nodes.forEach((part) => {
+    if (part.kind === "root" || !inPart(part.id)) return;
+
+    add(pageOf(part.id), part.children.length > 0 ? indexPage(part) : leafPage(part));
   });
+
+  const filed = modules.toSorted((a, b) => byText(a.path, b.path));
+  add(
+    "_files.md",
+    page(
+      `Files: ${plural(filed.length, "source file")} on ${plural(new Set(filed.map((module) => partOf(module.id))).size, "part page")}`,
+      "Files",
+      "Every scanned source file with the part page that describes it. Find a file with `grep 'src/lib/x.ts' _files.md`.",
+      bullets(filed.map((module) => `${code(module.path)} → ${filePageOf(module.path)}`)),
+    ),
+  );
 
   const cycles = facts.cycles.filter((cycle) => touches(cycle.files));
   const cycleFiles = new Set(cycles.flatMap((cycle) => cycle.files));
@@ -619,28 +610,33 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
       "Import cycles",
       ...(cycles.length === 0
         ? ["none"]
-        : cycles.map((cycle) => {
-            const bands = facts.cycleBands.get(cycle.number);
-            const bandLines = bands
-              ? `\n- Severity: ${bands.severity}\n- Edges: ${bands.edges}\n- Density: ${bands.density === null ? "none" : bands.density.toFixed(2)}`
-              : "";
-            const smallest = cycle.cuts[0];
-            const cutLines = smallest
-              ? [
-                  `- Smallest cut: ${plural(smallest.length, "import")}, ${plural(cycle.cuts.length, "choice")}`,
-                  ...cycle.cuts.slice(0, shownCuts).map((cut, index) => `  - Choice ${index + 1}: ${cutText(cut)}`),
-                ].join("\n")
-              : `- Smallest cut: none of ${largestCut} imports or fewer`;
-            return section(
+        : cycles.map((cycle) =>
+            section(
               `Cycle #${cycle.number}`,
               [
-                `- Files: ${cycle.files.length}${bandLines}`,
-                bullets(cycle.files.map(code)),
-                `${cutLines}\n`,
-                `### Imports inside cycle #${cycle.number}\n\n${bullets(cycle.edges.map(edgeText))}`,
+                factLines([
+                  ["Files", cycle.files.length],
+                  ["Severity", cycle.severity.severity],
+                  ["Loops", cycle.severity.loops],
+                  ["Imports inside", cycle.severity.edges],
+                  [
+                    "Smallest cut",
+                    cycle.cuts[0]
+                      ? `${plural(cycle.cuts[0].length, "import")}, ${plural(cycle.cuts.length, "choice")} (${searchText(cycle)})`
+                      : "none found",
+                  ],
+                  ["Without type imports", typesText(cycle)],
+                  [
+                    "File pairs passing through",
+                    `${cycle.reach.pairs} (visibility fan-in ${cycle.reach.fanIn} × fan-out ${cycle.reach.fanOut})`,
+                  ],
+                ]),
+                `- Files in it:\n${nested(cycle.files.map((file) => `${code(file)} (${filePageOf(file)})`))}`,
+                `- Cut choices:\n${nested(cycle.cuts.slice(0, shownCuts).map((cut, index) => `Choice ${index + 1}: ${cutText(cut)}`))}`,
+                `- Imports inside:\n${nested(cycle.edges.map(edgeText))}`,
               ].join("\n"),
-            );
-          })),
+            ),
+          )),
     ),
   );
 
@@ -650,24 +646,19 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
     page(
       `External packages: ${plural(allPackages.length, "package")}`,
       "External packages",
-      section(
-        "Packages",
-        table(
-          ["Package", "Files"],
-          allPackages.map((entry) => [code(entry.name), entry.files]),
-        ),
-      ),
-      ...allPackages.map((entry) =>
-        section(
-          code(entry.name),
-          bullets(
-            modules
-              .filter((module) => module.externals.includes(entry.name))
-              .map((module) => code(module.path))
-              .toSorted(byText),
-          ),
-        ),
-      ),
+      ...(allPackages.length === 0
+        ? ["none"]
+        : allPackages.map((entry) =>
+            section(
+              code(entry.name),
+              `${factLines([["Files", entry.files]])}\n${bullets(
+                modules
+                  .filter((module) => module.externals.includes(entry.name))
+                  .map((module) => code(module.path))
+                  .toSorted(byText),
+              )}`,
+            ),
+          )),
     ),
   );
 
@@ -677,14 +668,11 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
     page(
       `Warnings: ${diagnostics.length}`,
       "Warnings",
-      table(
-        ["File", "Line", "Kind", "Message"],
-        diagnostics.map((diagnostic) => [
-          code(diagnostic.file),
-          orNone(diagnostic.line),
-          diagnostic.kind,
-          diagnostic.message,
-        ]),
+      bullets(
+        diagnostics.map(
+          (diagnostic) =>
+            `${code(diagnostic.file)} line ${orNone(diagnostic.line)}, ${diagnostic.kind}: ${diagnostic.message}`,
+        ),
       ),
     ),
   );
@@ -704,27 +692,18 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
     page(
       `Routes: ${routes.length}`,
       "Routes",
-      table(
-        ["URL", "App", "Directory", "Page", "Route files", "Client files reached", "Server files reached"],
-        routes.map((route) => [
-          code(route.url),
-          code(route.app || "."),
-          code(route.directory),
-          code(routePages.get(route.id) ?? ""),
-          route.files.length,
-          route.reach.client.length,
-          route.reach.server.length,
-        ]),
+      bullets(
+        routes.map(
+          (route) =>
+            `${code(route.url)} in ${code(route.directory)} (${code(routePages.get(route.id) ?? "")}): ${plural(route.files.length, "route file")}, reaches ${plural(route.reach.client.length, "client file")} and ${plural(route.reach.server.length, "server file")}`,
+        ),
       ),
     ),
   );
 
   routes.forEach((route) => {
-    const packages = (list: typeof route.packages.client) =>
-      table(
-        ["Package", "Files"],
-        list.map((entry) => [code(entry.name), entry.files]),
-      );
+    const packageList = (list: typeof route.packages.client) =>
+      bullets(list.map((entry) => `${code(entry.name)}: ${plural(entry.files, "file")}`));
 
     add(
       routePages.get(route.id) ?? "_routes/route.md",
@@ -739,198 +718,264 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
             ["Directory", code(route.directory)],
           ]),
         ),
-        section(
-          "Route files",
-          table(
-            ["Role", "Side", "File"],
-            route.files.map((file) => [file.role, file.side, code(file.path)]),
-          ),
-        ),
+        section("Route files", bullets(route.files.map((file) => `${file.role} (${file.side}): ${code(file.path)}`))),
         section("Layouts", bullets(route.layouts.map(code))),
         section("Reached on the client", bullets(route.reach.client.map(code))),
         section("Reached on the server", bullets(route.reach.server.map(code))),
-        section("Packages on the client", packages(route.packages.client)),
-        section("Packages on the server", packages(route.packages.server)),
+        section("Packages on the client", packageList(route.packages.client)),
+        section("Packages on the server", packageList(route.packages.server)),
       ),
     );
   });
 
+  const scopeSides = new Set(modules.map((module) => module.placement.side));
   const scopeAreas = new Set(modules.flatMap((module) => (module.areaId === null ? [] : [module.areaId])));
-  const topAreas = data.areas.filter(
-    (area) => area.parent === null && area.id !== "area:standalone" && scopeAreas.has(area.id),
-  );
   const touchesArea = (...ids: readonly string[]) => ids.some((id) => scopeAreas.has(id));
-  const areaName = (id: string) => code(facts.areaLabelOf(id));
-  const areaCycles = facts.areaCycles.filter((cycle) => touchesArea(...cycle.areas));
-  const twoWay = facts.twoWay.filter((pair) => touchesArea(pair.a, pair.b));
-  const violations = facts.violations.filter((link) => touchesArea(link.from, link.to));
-  const areaCycleLines = bullets(
-    areaCycles.map(
-      (cycle) =>
-        `Area cycle #${cycle.number} (${plural(cycle.areas.length, "area")}): ${cycle.areas.map(areaName).join(", ")}`,
-    ),
-  );
-  const twoWayTable = table(
-    ["Area A", "Area B", "Imports A → B", "Imports B → A"],
-    twoWay.map((pair) => [areaName(pair.a), areaName(pair.b), pair.ab, pair.ba]),
-  );
-  const violationTable = (list: typeof violations) =>
-    table(
-      ["From", "Instability", "To", "Instability", "Imports"],
-      list.map((link) => [
-        areaName(link.from),
-        ratioText(link.fromInstability),
-        areaName(link.to),
-        ratioText(link.toInstability),
-        link.imports,
-      ]),
-    );
-  const areaPages = (id: string) =>
-    [...tree.nodes.values()]
-      .filter((node) => node.area?.id === id && inMap(node.id))
-      .map((node) => code(mapPage(node.id)))
-      .join(", ") || "not in this export";
+  const layerSides = facts.layers.filter((layers) => scopeSides.has(layers.side));
 
   add(
     "_areas.md",
     page(
-      `Areas: ${plural(topAreas.length, "area")} · ${plural(areaCycles.length, "area cycle")} · ${plural(twoWay.length, "two-way dependency", "two-way dependencies")}`,
+      `Areas: ${[
+        plural(data.areas.filter((area) => area.parent === null && scopeAreas.has(area.id)).length, "area"),
+        ...layerSides.map((layers) => `${layers.side} ${percent(layers.back.length, layers.between)} pointing back`),
+      ].join(" · ")}`,
       "Areas",
-      section(
-        "Areas",
-        table(
+      "Areas are found within each side, so every number here is about imports between files of the same side.",
+      ...[...new Set(data.areas.filter((area) => scopeAreas.has(area.id)).map((area) => area.side))].map((side) => {
+        const layers = facts.layers.find((entry) => entry.side === side);
+        const top = data.areas.filter((area) => area.side === side && area.parent === null && scopeAreas.has(area.id));
+        const twoWay = facts.twoWay.filter((pair) => pair.side === side && touchesArea(pair.a, pair.b));
+        const areaLine = (id: string) => {
+          const coupling = facts.areaFacts.get(id);
+          return coupling
+            ? `${areaName(id)}, ${areaPage(id)}: ${plural(coupling.files, "file")}, cohesion ${ratioText(coupling.cohesion)}, instability ${ratioText(coupling.instability)}, ${coupling.incoming} in, ${coupling.outgoing} out`
+            : areaName(id);
+        };
+
+        return section(
+          `${sideLabel(side)} (${side})`,
           [
-            "Area",
-            "Files",
-            "Internal imports",
-            "Touching imports",
-            "Cohesion",
-            "Instability",
-            "Imports in",
-            "Imports out",
-            "Area cycle",
-            "Map pages",
-          ],
-          topAreas.map((area) => {
-            const coupling = facts.areaFacts.get(area.id);
-            return [
-              areaName(area.id),
-              area.moduleIds.length,
-              area.internalImports,
-              area.touchingImports,
-              ratioText(coupling?.cohesion ?? null),
-              ratioText(coupling?.instability ?? null),
-              coupling?.incoming ?? 0,
-              coupling?.outgoing ?? 0,
-              coupling?.cycle === null || coupling?.cycle === undefined ? "none" : `#${coupling.cycle}`,
-              areaPages(area.id),
-            ];
-          }),
-        ),
-      ),
-      section(
-        "Imports between areas",
-        table(
-          ["From", "To", "Imports"],
-          facts.areaLinks
-            .filter((link) => touchesArea(link.from, link.to))
-            .map((link) => [areaName(link.from), areaName(link.to), link.imports]),
-        ),
-      ),
-      section("Area cycles", areaCycleLines),
-      section("Two-way dependencies", twoWayTable),
-      section("Stable areas depending on less stable ones", violationTable(violations)),
+            layers ? layerLines(layers, layers.back.length) : "- Layer order: fewer than two areas",
+            subsection(
+              "Areas",
+              bullets(
+                top.map((area) => {
+                  const subs = data.areas.filter((sub) => sub.parent === area.id);
+                  return `${areaLine(area.id)}${subs.length === 0 ? "" : `\n${nested(subs.map((sub) => areaLine(sub.id)))}`}`;
+                }),
+              ),
+            ),
+            subsection(
+              "Imports between areas",
+              bullets(
+                facts.areaLinks
+                  .filter((link) => link.side === side && touchesArea(link.from, link.to))
+                  .map((link) => `${areaName(link.from)} → ${areaName(link.to)}: ${plural(link.imports, "import")}`),
+              ),
+            ),
+            subsection(
+              "Two-way dependencies",
+              bullets(
+                twoWay.map((pair) => `${areaName(pair.a)} and ${areaName(pair.b)}: ${pair.ab} → and ${pair.ba} ←`),
+              ),
+            ),
+          ].join("\n\n"),
+        );
+      }),
     ),
   );
 
-  const inScope = new Set(modules.map((module) => module.id));
-  const scopedFunctions = data.functions.filter((fn) => inScope.has(fn.moduleId));
-  const scores = scopedFunctions.map((fn) => fn.complexity).toSorted((a, b) => a - b);
-  const bandCount = (band: ReturnType<typeof ccBand>) => scores.filter((score) => ccBand(score) === band).length;
-  const high = scopedFunctions
-    .filter((fn) => ccBand(fn.complexity) === "high")
-    .toSorted(
-      (a, b) =>
-        b.complexity - a.complexity || byText(a.location.file, b.location.file) || a.location.line - b.location.line,
-    );
-  const hubs = modules.map((module) => facts.file(module)).filter((file) => file.bands.hub);
-  const findingCycles = facts.cycles.filter((cycle) => touches(cycle.files));
-  const barrels = modules.filter((module) => module.barrel).map((module) => module.path);
-
+  const healthSides = facts.health.filter((entry) => scopeSides.has(entry.side));
   add(
-    "_findings.md",
+    "_health.md",
     page(
-      `Findings: ${plural(high.length, "function")} in the high CC band · ${plural(hubs.length, "hub")} · ${plural(findingCycles.length, "cycle")} · ${plural(areaCycles.length, "area cycle")}`,
-      "Findings",
-      "What stands out in this export. Each section points to the pages with the details; what each label counts is in `_definitions.md`.",
-      section(
-        "CC distribution",
-        factLines([
-          ["Functions", scores.length],
-          ["Median CC", nearestRank(scores, 50)],
-          ["P90 CC", nearestRank(scores, 90)],
-          ["P95 CC", nearestRank(scores, 95)],
-          ["P99 CC", nearestRank(scores, 99)],
-          ["Max CC", scores.at(-1) ?? null],
-          ["Low band", `${bandCount("low")} (${percent(bandCount("low"), scores.length)})`],
-          ["Moderate band", `${bandCount("moderate")} (${percent(bandCount("moderate"), scores.length)})`],
-          ["High band", `${bandCount("high")} (${percent(bandCount("high"), scores.length)})`],
-        ]),
-      ),
-      section(
-        "Functions in the high CC band",
-        [
-          table(
-            ["Function", "CC", "File", "Line"],
-            high
-              .slice(0, shownHigh)
-              .map((fn) => [code(fn.name), fn.complexity, code(fn.location.file), fn.location.line]),
-          ),
-          ...(high.length > shownHigh ? [`- And ${high.length - shownHigh} more in the high band.`] : []),
-        ].join("\n\n"),
-      ),
-      section(
-        "Hubs",
-        table(
-          ["File", "Side", "Fan-in", "Fan-out", "Test fan-in", "Cycle"],
-          hubs.map((file) => [
-            code(file.path),
-            file.side,
-            file.fanIn,
-            file.fanOut,
-            file.testFanIn,
-            file.cycle === null ? "none" : `#${file.cycle}`,
+      `Health: ${healthSides
+        .map(
+          (entry) =>
+            `${entry.side} propagation cost ${entry.propagationCost === null ? "none" : percent(entry.propagationCost, 1)}`,
+        )
+        .join(" · ")}`,
+      "Health",
+      "How each side looks as a whole, with the side's number of files. None of these numbers gets a band or a verdict; what each one means is at the end of this page. Every number is measured on the whole project, also in a part export.",
+      ...healthSides.map((entry) =>
+        section(
+          `${sideLabel(entry.side)} (${entry.side}), ${plural(entry.files, "file")}`,
+          factLines([
+            ["Files", entry.files],
+            ["Propagation cost", entry.propagationCost === null ? null : percent(entry.propagationCost, 1)],
+            ["Largest cycle", entry.largestCycle === 0 ? "none" : shareText(entry.largestCycle, entry.files, "file")],
+            [
+              "Imports pointing back",
+              entry.layers
+                ? `${shareText(entry.layers.back.length, entry.layers.between, "import between areas", "imports between areas")}${entry.layers.approximate ? ", approximate" : ""}`
+                : "not measured: fewer than two areas",
+            ],
+            [
+              "Complex decisions, counting conditions",
+              shareText(
+                entry.complexity.conditions.moderate + entry.complexity.conditions.high,
+                entry.complexity.conditions.total,
+                "decision",
+              ),
+            ],
+            [
+              "Complex decisions, branches only",
+              shareText(
+                entry.complexity.branches.moderate + entry.complexity.branches.high,
+                entry.complexity.branches.total,
+                "branch",
+                "branches",
+              ),
+            ],
+            ["Modularity of areas", entry.modularity.areas === null ? null : entry.modularity.areas.toFixed(2)],
+            ["Modularity of folders", entry.modularity.folders === null ? null : entry.modularity.folders.toFixed(2)],
           ]),
         ),
       ),
+      section("What the numbers mean", bullets(healthNotes.map(([label, text]) => `${label}: ${text}`))),
+    ),
+  );
+
+  const scopedFunctions = modules.flatMap((module) => facts.functionsOf(module.id));
+  const high = scopedFunctions
+    .filter((fn) => fn.ccBand === "high")
+    .toSorted((a, b) => b.cc - a.cc || byText(a.file, b.file) || a.line - b.line);
+  const heldInside = scopedFunctions
+    .filter(holdsInside)
+    .toSorted((a, b) => b.inclusive - a.inclusive || byText(a.file, b.file) || a.line - b.line);
+  const bigClasses = modules
+    .flatMap((module) => facts.classesOf(module.id))
+    .filter((cls) => cls.inclusive >= highFrom)
+    .toSorted((a, b) => b.inclusive - a.inclusive || byText(a.file, b.file) || a.line - b.line);
+  const excess = modules
+    .filter((module) => module.metrics.excessCC > 0)
+    .toSorted((a, b) => b.metrics.excessCC - a.metrics.excessCC || byText(a.path, b.path));
+  const leafParts = [...tree.nodes.values()]
+    .filter((part) => part.kind !== "root" && part.children.length === 0 && inPart(part.id))
+    .map((part) => ({ part, stats: facts.stats(part.moduleIds) }))
+    .filter((entry) => entry.stats.excessCC > 0)
+    .toSorted((a, b) => b.stats.excessCC - a.stats.excessCC || byText(pageOf(a.part.id), pageOf(b.part.id)));
+  const through = modules
+    .filter((module) => pairsOf(module) > 1)
+    .toSorted((a, b) => pairsOf(b) - pairsOf(a) || byText(a.path, b.path));
+  const findingCycles = cycles.toSorted((a, b) => b.reach.pairs - a.reach.pairs || a.number - b.number);
+  const barrels = modules.filter((module) => module.barrel).map((module) => module.path);
+  add(
+    "_findings.md",
+    page(
+      `Findings: ${plural(high.length, "function")} in the high CC band · ${plural(heldInside.length, "function")} holding logic in inner functions · ${plural(findingCycles.length, "cycle")}`,
+      "Findings",
+      "What stands out in this export. Each line points to the page with the details; what each label counts is in `_definitions.md`. The health of each side as a whole is in `_health.md`.",
+      section(
+        "Complexity by side",
+        facts.complexity
+          .filter((entry) => scopeSides.has(entry.side))
+          .map((entry) =>
+            subsection(
+              `${sideLabel(entry.side)} (${entry.side})`,
+              factLines([
+                ["Functions", entry.functions],
+                ["Decisions", entry.conditions.total],
+                ...(entry.conditions.total === 0
+                  ? []
+                  : [
+                      ...bandLines("CC", entry.conditions, "decision", "decisions"),
+                      ...bandLines("Branches only", entry.branches, "branch", "branches"),
+                    ]),
+              ]),
+            ),
+          )
+          .join("\n\n") || "none",
+      ),
+      section(
+        "Parts with the most excess CC",
+        `${bullets(
+          leafParts
+            .slice(0, shownTop)
+            .map(
+              ({ part, stats }) =>
+                `${partRef(part.id)}: excess CC ${stats.excessCC}, ${plural(stats.decisions, "decision")}, ${plural(stats.files, "file")}`,
+            ),
+        )}${more(leafParts.length, shownTop, "parts with excess CC")}`,
+      ),
+      section(
+        "Files with the most excess CC",
+        `${bullets(
+          excess
+            .slice(0, shownTop)
+            .map(
+              (module) =>
+                `${code(module.path)} (${filePageOf(module.path)}): excess CC ${module.metrics.excessCC}, ${plural(module.metrics.decisions, "decision")}, max CC ${orNone(module.metrics.maxCC)}`,
+            ),
+        )}${more(excess.length, shownTop, "files with excess CC")}`,
+      ),
+      section(
+        "Functions in the high CC band",
+        `${bullets(
+          high.slice(0, shownHigh).map((fn) => `${code(fn.name)} in ${code(fn.file)} line ${fn.line}: ${ccText(fn)}`),
+        )}${more(high.length, shownHigh, "in the high band")}`,
+      ),
+      section(
+        "Logic held in inner functions",
+        `${bullets([
+          ...heldInside
+            .slice(0, shownTop)
+            .map(
+              (fn) =>
+                `${code(fn.name)} in ${code(fn.file)} line ${fn.line}: inclusive CC ${fn.inclusive}, own CC ${fn.cc}${
+                  fn.outerWrites === 0 ? "" : `, ${plural(fn.outerWrites, "outer variable")} written by inner functions`
+                }`,
+            ),
+          ...bigClasses
+            .slice(0, shownTop)
+            .map(
+              (cls) => `class ${code(cls.name)} in ${code(cls.file)} line ${cls.line}: inclusive CC ${cls.inclusive}`,
+            ),
+        ])}${more(heldInside.length, shownTop, "functions")}${more(bigClasses.length, shownTop, "classes")}`,
+      ),
+      section(
+        "Files most changes pass through",
+        `${bullets(
+          through.slice(0, shownTop).map((module) => {
+            const file = facts.file(module);
+            return `${code(module.path)} (${module.placement.side}, ${file.visibility.role}): ${pairsOf(module)} file pairs (${file.visibility.fanIn} × ${file.visibility.fanOut}); fan-in ${file.fanIn}, fan-out ${file.fanOut}${file.cycle === null ? "" : `, cycle #${file.cycle}`}`;
+          }),
+        )}${more(through.length, shownTop, "files")}`,
+      ),
       section(
         "Import cycles",
-        [
-          table(
-            ["Cycle", "Files", "Severity", "Smallest cut"],
-            findingCycles.map((cycle) => [
-              `#${cycle.number}`,
-              cycle.files.length,
-              facts.cycleBands.get(cycle.number)?.severity ?? "none",
-              cycle.cuts[0]
-                ? `${plural(cycle.cuts[0].length, "import")} (${plural(cycle.cuts.length, "choice")}): ${cutText(cycle.cuts[0])}`
-                : `none of ${largestCut} imports or fewer`,
-            ]),
+        `${bullets(
+          findingCycles.map(
+            (cycle) =>
+              `Cycle #${cycle.number}, ${severityText(cycle)}; ${cycle.reach.pairs} file pairs pass through it${
+                cycle.withoutTypes === 0 ? "; it exists only because of type imports" : ""
+              }. Cut: ${cycle.cuts[0] ? cutText(cycle.cuts[0]) : "none found"}`,
           ),
-          "Every choice and the imports of each cycle: `_cycles.md`.",
-        ].join("\n\n"),
+        )}\n\nEvery choice and the imports of each cycle: \`_cycles.md\`.`,
       ),
-      section("Area cycles", `${areaCycleLines}\n\n${twoWayTable}\n\nDetails: \`_areas.md\`.`),
       section(
-        "Stable areas depending on less stable ones",
-        [
-          violationTable(violations.slice(0, 10)),
-          ...(violations.length > 10 ? [`- And ${violations.length - 10} more in \`_areas.md\`.`] : []),
-        ].join("\n\n"),
+        "Layers",
+        `${bullets(
+          layerSides.map(
+            (layers) =>
+              `${layers.side}: ${shareText(layers.back.length, layers.between, "import between areas", "imports between areas")} point back${layers.approximate ? " (approximate)" : ""}`,
+          ),
+        )}\n\n${subsection(
+          "Two-way dependencies",
+          bullets(
+            facts.twoWay
+              .filter((pair) => touchesArea(pair.a, pair.b))
+              .slice(0, 10)
+              .map(
+                (pair) => `${pair.side}: ${areaName(pair.a)} and ${areaName(pair.b)}: ${pair.ab} → and ${pair.ba} ←`,
+              ),
+          ),
+        )}\n\nDetails: \`_areas.md\`.`,
       ),
       section(
         "Barrels",
-        `${factLines([["Barrels", barrels.length]])}\n${barrels.length === 0 ? "" : bullets(barrels.map(code))}`.trim(),
+        `${factLines([["Barrels", barrels.length]])}${barrels.length === 0 ? "" : `\n${bullets(barrels.map(code))}`}`,
       ),
     ),
   );
@@ -944,36 +989,39 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
     ),
   );
 
-  const root = directory("");
-  const all = facts.stats(root.moduleIds);
-  const entryPoints = [
-    ...modules.reduce((map, module) => {
-      const label = module.placement.entry;
-      return label === null ? map : map.set(label, [...(map.get(label) ?? []), module.path]);
-    }, new Map<string, string[]>()),
-  ].toSorted(([a], [b]) => byText(a, b));
-
+  const all = facts.stats(modules.map((module) => module.id));
   const scopeName = scopeNode ? (names.get(scopeNode.id) ?? "") : "";
-  const scopeTitle = scopeNode && scopeNode.kind !== "root" ? `${mapTrail(scopeNode.id)} (${scopeName})` : data.name;
-  const scopeKind = scopeNode
-    ? { root: "project", side: "side", area: "area", subarea: "sub-area", folder: "folder" }[scopeNode.kind]
-    : "project";
+  const scoped = scopeNode !== undefined && scopeNode.kind !== "root";
+  const scopeTitle = scoped ? `${trail(scopeNode.id)} (${scopeName})` : data.name;
+  const sideScale = (side: Side) => facts.scaleOf(side);
+  const cutoffText = (label: string, scale: ReturnType<typeof sideScale>["fanIn"]) => {
+    const { cutoffs, population } = scale;
+    const parts = [
+      ...(cutoffs.moderate === null ? [] : [`moderate from ${cutoffs.moderate}`]),
+      ...(cutoffs.high === null ? [] : [`high from ${cutoffs.high}`]),
+      ...(cutoffs.extreme === null ? [] : [`extreme from ${cutoffs.extreme}`]),
+    ];
+    if (population === 0) return `- ${label}: no ranked files`;
+
+    return `- ${label}: ${parts.length > 0 ? parts.join(", ") : "all values equal"} (of ${plural(population, "ranked file")})`;
+  };
+  const judgementSides = data.lanes.map((lane) => lane.side).filter((side) => scopeSides.has(side));
 
   add(
     "_index.md",
     page(
       `${scopeTitle}: ${statsLine(all)}`,
       scopeTitle,
-      ...(scopeNode && scopeNode.kind !== "root"
+      ...(scoped
         ? [
             section(
               "Scope",
               factLines([
                 ["Scope", scopeName],
                 ["Scope label", scopeNode.label],
-                ["Scope kind", scopeKind],
+                ["Scope kind", kindLabel[scopeNode.kind]],
                 ["Files in scope", `${modules.length} of ${data.modules.length}`],
-                ["Start", code(mapPage(scopeNode.id))],
+                ["Start", code(pageOf(scopeNode.id))],
               ]),
             ),
           ]
@@ -993,25 +1041,37 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
         "How to read this directory",
         bullets([
           "It is a snapshot of code metrics measured by Laqueus when the project was scanned. It does not change when the code does; export again for fresh numbers.",
-          ...(scopeNode && scopeNode.kind !== "root"
+          ...(scoped
             ? [
-                `It covers only ${code(scopeName)} (${scopeNode.label}): pages exist for its files and the directories holding them. Files outside it still appear by path where they import or are imported, and every number is measured against the whole project.`,
+                `It covers only ${code(scopeName)} (${scopeNode.label}): pages exist for its parts. Files outside it still appear by path where they import or are imported, and every number is measured against the whole project.`,
               ]
             : []),
-          "The first line of every page is a one-line summary. Read first lines to scan a level, e.g. `head -qn1 src/*/_index.md`.",
-          "The page for source file `X` is `X.md`, and every source directory has an `_index.md`. Paths are relative to the project root.",
-          "Names starting with `_` are generated pages; everything else mirrors the source tree.",
-          `${code(scopeNode && scopeNode.kind !== "root" ? mapPage(scopeNode.id) : "_map/_index.md")} groups the files the way the Laqueus viewer does: by side (client, server…), then by area and sub-area.`,
-          'Facts are written as `- Label: value` lines, so they can be searched, e.g. `grep -rl "Cycle: #<n>" .` for the files of one cycle.',
-          "Start with `_findings.md` for what stands out: the CC distribution, the most complex functions, hubs, cycles with the imports that would break them, and coupling between areas.",
-          "Also: `_cycles.md`, `_areas.md`, `_packages.md`, `_routes/_index.md`, `_diagnostics.md`. What each label counts: `_definitions.md`.",
+          "Start with `_health.md` for how each side looks as a whole, then `_findings.md` for what stands out: complex functions, logic held in inner functions, the files most changes pass through, cycles with the imports that would break them, and layers between areas.",
+          "The project is split into parts the way `laqueus list` and the viewer split it: one folder per side, e.g. `server/_index.md`, and in it one page per area, sub-area or folder, e.g. `server/src-lib.md`. A part page describes the part, what it depends on and what uses it, then each of its files.",
+          "`_files.md` lists every source file with the page that describes it, e.g. `grep 'src/lib/x.ts' _files.md`.",
+          "The first line of every page is a one-line summary. Read first lines to scan a level, e.g. `head -qn1 server/*.md`.",
+          'Facts are written as `- Label: value` lines, so they can be searched, e.g. `grep -rn "Cycle: #<n>" .` for the files of one cycle.',
+          "Test files are not scanned (see Scope in `_definitions.md`).",
+          "Also: `_areas.md`, `_cycles.md`, `_packages.md`, `_routes/_index.md`, `_diagnostics.md`. What each label counts: `_definitions.md`.",
         ]),
+      ),
+      section(
+        "Sides",
+        bullets(
+          data.lanes
+            .filter((lane) => scopeSides.has(lane.side))
+            .map((lane) => {
+              const sideNode = `side:${lane.side}`;
+              return `${inPart(sideNode) ? code(pageOf(sideNode)) : code(lane.side)}: ${lane.label}, ${plural(data.modules.filter((module) => module.placement.side === lane.side).length, "file")}. ${lane.description}`;
+            }),
+        ),
       ),
       section(
         "Totals",
         factLines([
           ["Files", data.modules.length],
           ["Import edges", data.dependencyEdges.length],
+          ["Type-only import edges", data.dependencyEdges.filter((edge) => edge.typeOnly).length],
           ["Cycles", facts.cycles.length],
           ["Areas", data.areas.filter((area) => area.parent === null).length],
           ["Routes", data.routes.length],
@@ -1020,32 +1080,18 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
           ["Local call edges", data.callEdges.length],
         ]),
       ),
-      section("Judgement bands", judgementSection(facts, modules)),
       section(
-        "Sides",
-        table(
-          ["Side", "Label", "Files", "Map page", "Meaning"],
-          data.lanes.map((lane) => {
-            const node = tree.nodes.get(`side:${lane.side}`);
-            return [
-              lane.side,
-              lane.label,
-              data.modules.filter((module) => module.placement.side === lane.side).length,
-              node && inMap(node.id) ? code(mapPage(node.id)) : "not in this export",
-              lane.description,
-            ];
-          }),
-        ),
+        "Judgement bands",
+        [
+          `- CC bands: low 1–${excessFrom}, moderate ${excessFrom + 1}–${highFrom - 1}, high ${highFrom}+ (fixed thresholds)`,
+          ...judgementSides.flatMap((side) => [
+            cutoffText(`Fan-in, ${side}`, sideScale(side).fanIn),
+            cutoffText(`Fan-out, ${side}`, sideScale(side).fanOut),
+            `- Visibility medians, ${side}: fan-in ${sideScale(side).medians.fanIn}, fan-out ${sideScale(side).medians.fanOut}`,
+          ]),
+          "- Cycle severity: minor (2 files), moderate (3–5), severe (6+)",
+        ].join("\n"),
       ),
-      section(
-        "Entry points",
-        entryPoints.length === 0
-          ? "none"
-          : entryPoints
-              .map(([label, paths]) => `- ${label}: ${paths.toSorted(byText).map(code).join(", ")}`)
-              .join("\n"),
-      ),
-      ...partSections(directoryPart(root)),
     ),
   );
 

@@ -67,19 +67,19 @@ class Service {
     expect(callPairs("calls.ts", code)).toEqual([
       "Service.make -> Service.build",
       "Service.run -> Service.step",
+      "Service.run › later -> Service.step",
       "a -> b",
       "a -> helper",
       "forEach callback -> b",
-      "helper -> b",
-      "inner -> b",
-      "later -> Service.step",
-      "outer -> inner",
+      "helper -> helper › b",
+      "outer -> outer › inner",
+      "outer › inner -> b",
     ]);
   });
 
   it("resolves a shadowed name to the inner binding", () => {
     const analysis = analyzeCode("calls.ts", code);
-    const innerB = analysis.functions.find((fn) => fn.name === "b" && fn.location.line === 18);
+    const innerB = analysis.functions.find((fn) => fn.name === "helper › b" && fn.location.line === 18);
     const helper = analysis.functions.find((fn) => fn.name === "helper");
 
     expect(analysis.calls).toContainEqual(expect.objectContaining({ from: helper?.id, to: innerB?.id }));
@@ -94,7 +94,7 @@ class Service {
     expect(edge?.occurrences.map((location) => location.line)).toEqual([7, 12]);
   });
 
-  it("ignores Svelte template references and calls", () => {
+  it("links calls from inline template handlers, not from markup expressions", () => {
     expect(
       callPairs(
         "Page.svelte",
@@ -108,7 +108,7 @@ class Service {
 <button onclick={() => persist()}>Persist</button>
 <p>{persist()}</p>`,
       ),
-    ).toEqual(["save -> persist"]);
+    ).toEqual(["<template> › onclick callback -> persist", "save -> persist"]);
   });
 
   it("does not resolve calls to imported functions in Svelte scripts", () => {

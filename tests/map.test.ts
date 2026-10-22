@@ -52,15 +52,15 @@ describe("layered layout", () => {
 });
 
 describe("drill-down map", () => {
-  it("starts with one card per side and keeps tests in the tray", async () => {
+  it("starts with one card per side and keeps tooling in the tray", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const hidden = buildTree(snapshot, { grouping: "areas", tray: new Set() });
 
     expect(hidden.nodes.get("root")?.children).toEqual(["side:client", "side:shared", "side:server"]);
 
-    const shown = buildTree(snapshot, { grouping: "areas", tray: new Set(["test"]) });
+    const shown = buildTree(snapshot, { grouping: "areas", tray: new Set(["tooling"]) });
 
-    expect(shown.nodes.get("root")?.children).toContain("side:test");
+    expect(shown.nodes.get("root")?.children).toContain("side:tooling");
   });
 
   it("aggregates imports between sides on the first level", async () => {

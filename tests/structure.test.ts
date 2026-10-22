@@ -38,17 +38,9 @@ describe("SvelteKit structure", () => {
         "src/routes/api/+server.ts",
       ],
       unreached: ["src/lib/orphan.ts"],
-      test: ["src/lib/format.test.ts"],
       tooling: ["scripts/seed.ts", "svelte.config.js"],
     });
-    expect(snapshot.lanes.map((lane) => lane.side)).toEqual([
-      "client",
-      "shared",
-      "server",
-      "unreached",
-      "test",
-      "tooling",
-    ]);
+    expect(snapshot.lanes.map((lane) => lane.side)).toEqual(["client", "shared", "server", "unreached", "tooling"]);
   });
 
   it("marks framework entry points and explains reachability with an import chain", async () => {
