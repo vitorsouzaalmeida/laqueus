@@ -2,18 +2,19 @@ export type Location = { file: string; line: number; column: number };
 
 export type ModuleMetrics = {
   fanIn: number;
-  testFanIn: number;
   fanOut: number;
+  visibilityFanIn: number;
+  visibilityFanOut: number;
   maxCC: number | null;
-  meanCC: number | null;
+  decisions: number;
+  excessCC: number;
   functionCount: number;
   cycleGroup: number | null;
-  island: number;
 };
 
 export type Point = { x: number; y: number };
 
-export type Side = "client" | "shared" | "server" | "code" | "unreached" | "test" | "tooling";
+export type Side = "client" | "shared" | "server" | "code" | "unreached" | "tooling";
 
 export type Placement = {
   side: Side;
@@ -39,6 +40,7 @@ export type ModuleNode = {
 
 export type Area = {
   id: string;
+  side: Side;
   label: string;
   parent: string | null;
   moduleIds: string[];
@@ -79,6 +81,17 @@ export type FunctionNode = {
   name: string;
   location: Location;
   complexity: number;
+  branches: number;
+  inclusive: number;
+  outerWrites: number;
+};
+
+export type ClassNode = {
+  id: string;
+  moduleId: string;
+  name: string;
+  location: Location;
+  inclusive: number;
 };
 
 export type DependencyEdge = {
@@ -88,6 +101,7 @@ export type DependencyEdge = {
   occurrences: Location[];
   names: string[];
   via: string[];
+  typeOnly: boolean;
 };
 
 export type CallEdge = {
@@ -97,7 +111,12 @@ export type CallEdge = {
   occurrences: Location[];
 };
 
-export type DiagnosticKind = "parse-error" | "unresolved-import" | "unsupported-syntax" | "server-only-import";
+export type DiagnosticKind =
+  | "parse-error"
+  | "unresolved-import"
+  | "unsupported-syntax"
+  | "server-only-import"
+  | "self-import";
 
 export type Diagnostic = {
   file: string;
@@ -119,6 +138,7 @@ export type GraphSnapshot = {
   routes: Route[];
   modules: ModuleNode[];
   functions: FunctionNode[];
+  classes: ClassNode[];
   dependencyEdges: DependencyEdge[];
   callEdges: CallEdge[];
   diagnostics: Diagnostic[];
@@ -177,3 +197,6 @@ export const errorMessage = (error: unknown) => (error instanceof Error ? error.
 export const moduleId = (path: string) => `module:${path}`;
 export const modulePath = (id: string) => id.slice("module:".length);
 export const functionId = (location: Location) => `fn:${location.file}:${location.line}:${location.column}`;
+export const classId = (location: Location) => `class:${location.file}:${location.line}:${location.column}`;
+export const isStandaloneArea = (id: string) => id.endsWith(":standalone");
+export const isWidelyUsedArea = (id: string) => id.endsWith(":widely-used");

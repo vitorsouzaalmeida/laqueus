@@ -43,6 +43,8 @@ const partsRows = (facts: Facts, names: ReadonlyMap<string, string>, nodes: read
       kind: kindLabel[node.kind],
       files: stats.files,
       functions: stats.functions,
+      decisions: stats.decisions,
+      excessCC: stats.excessCC,
       maxCC: stats.maxCC,
     };
   });
@@ -54,6 +56,8 @@ const filesRows = (facts: Facts, node: TreeNode) =>
     .map((module) => ({
       path: module.path,
       functions: module.metrics.functionCount,
+      decisions: module.metrics.decisions,
+      excessCC: module.metrics.excessCC,
       maxCC: module.metrics.maxCC,
       fanIn: module.metrics.fanIn,
       fanOut: module.metrics.fanOut,

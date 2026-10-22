@@ -35,6 +35,7 @@ describe("barrels", () => {
       "src/lib/alpha.ts",
       "src/lib/beta.ts",
       "src/lib/gamma.ts",
+      "src/lib/types.ts",
     ]);
   });
 
@@ -47,11 +48,12 @@ describe("barrels", () => {
     expect(snapshot.modules.every((module) => module.metrics.cycleGroup === null)).toBe(true);
   });
 
-  it("counts test importers apart from fan-in", async () => {
+  it("leaves test files out of the scan", async () => {
     const snapshot = await scan(fixture("barrels"));
 
-    expect(moduleOf(snapshot, "src/lib/alpha.ts")?.metrics).toMatchObject({ fanIn: 2, testFanIn: 1 });
-    expect(moduleOf(snapshot, "src/lib/index.ts")?.metrics).toMatchObject({ fanIn: 1, testFanIn: 0 });
+    expect(snapshot.modules.map((module) => module.path)).not.toContain("src/main.test.ts");
+    expect(moduleOf(snapshot, "src/lib/alpha.ts")?.metrics).toMatchObject({ fanIn: 2 });
+    expect(moduleOf(snapshot, "src/lib/index.ts")?.metrics).toMatchObject({ fanIn: 1 });
   });
 
   it("does not treat a file with code of its own as a barrel", () => {
@@ -64,8 +66,12 @@ describe("barrels", () => {
     expect(mixed.exports.barrel).toBe(false);
     expect(pure.exports).toMatchObject({
       barrel: true,
-      reexports: [{ name: "a", specifier: "./a", imported: "a" }],
+      reexports: [
+        { name: "a", specifier: "./a", imported: "a" },
+        { name: "T", specifier: "./t", imported: "T" },
+      ],
       stars: ["./b"],
     });
+    expect(analyzeCode("types.ts", `export type { T } from "./t";\n`).exports.barrel).toBe(false);
   });
 });

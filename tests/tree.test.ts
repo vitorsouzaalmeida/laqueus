@@ -18,20 +18,16 @@ describe("part names", () => {
       "shared",
       "server",
       "unreached",
-      "test",
       "tooling",
     ]);
-    expect(tree.nodes.get("side:server")?.children.map((id) => names.get(id))).toEqual([
-      "server/server-src",
-      "server/src-routes",
-    ]);
+    expect(tree.nodes.get("side:server")?.children.map((id) => names.get(id))).toEqual(["server/src-lib"]);
   });
 
   it("finds a side and a nested area by name", async () => {
     const { tree, names } = await setup();
 
     expect(findPart(tree, names, "server")).toMatchObject({ ok: true, value: { id: "side:server" } });
-    expect(findPart(tree, names, "/server/server-src/")).toMatchObject({ ok: true, value: { kind: "area" } });
+    expect(findPart(tree, names, "/server/src-lib/")).toMatchObject({ ok: true, value: { kind: "area" } });
   });
 
   it("names the choices at the deepest level that matched", async () => {
@@ -39,7 +35,7 @@ describe("part names", () => {
 
     expect(findPart(tree, names, "server/nope")).toEqual({
       ok: false,
-      error: 'No part "server/nope". Inside server: server/server-src, server/src-routes.',
+      error: 'No part "server/nope". Inside server: server/src-lib.',
     });
     expect(findPart(tree, names, "nope")).toMatchObject({
       ok: false,

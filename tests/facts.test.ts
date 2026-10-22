@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fileLogic } from "../src/analyze";
-import { branchStep, createFacts } from "../src/facts";
+import { bandShares, branchStep, createFacts } from "../src/facts";
 import type { FunctionLogic, GraphSnapshot } from "../src/model";
 import { buildTree, traySides } from "../src/tree";
 import { buildView } from "../viewer/map";
@@ -91,5 +91,38 @@ describe("export facts", () => {
     expect(snapshot.modules.flatMap((module) => without.functionsOf(module.id)).every((fn) => fn.logic === null)).toBe(
       true,
     );
+  });
+
+  it("ranks fan-in without entry points and barrels, and fan-out without barrels", async () => {
+    const snapshot = await scan(fixture("barrels"));
+    const facts = createFacts(snapshot, null);
+    const fileOf = (path: string) => {
+      const module = snapshot.modules.find((candidate) => candidate.path === path);
+      if (!module) throw new Error(`${path} missing`);
+      return facts.file(module);
+    };
+
+    expect(fileOf("src/main.ts").fanInRank).toBeNull();
+    expect(fileOf("src/main.ts").fanOutRank).not.toBeNull();
+    expect(fileOf("src/lib/index.ts")).toMatchObject({ fanInRank: null, fanOutRank: null });
+    expect(fileOf("src/lib/alpha.ts").fanInRank?.population).toBe(4);
+  });
+
+  it("describes each side's health as a whole", async () => {
+    const facts = createFacts(await scan(fixture("topology")), null);
+
+    expect(facts.health).toEqual([
+      expect.objectContaining({
+        side: "code",
+        files: 4,
+        propagationCost: 0.5,
+        largestCycle: 2,
+        modularity: expect.objectContaining({ folders: 0 }),
+      }),
+    ]);
+  });
+
+  it("shares decisions out by CC band", () => {
+    expect(bandShares([1, 3, 12, 20])).toEqual({ total: 32, low: 2, moderate: 11, high: 19 });
   });
 });

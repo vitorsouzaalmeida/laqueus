@@ -26,7 +26,6 @@
   --side-server: #e8590c;
   --side-code: #5c7cfa;
   --side-unreached: #adb5bd;
-  --side-test: #ae3ec9;
   --side-tooling: #868e96;
   --warning: #b54708;
   --cc-none: #d0d4dc;
@@ -67,7 +66,6 @@
     --side-server: #ffa94d;
     --side-code: #91a7ff;
     --side-unreached: #6c757d;
-    --side-test: #da77f2;
     --side-tooling: #adb5bd;
     --warning: #fdb022;
     --cc-none: #3a3f4b;
@@ -721,9 +719,6 @@ main {
 }
 .lane-badge.side-unreached {
   box-shadow: inset 3px 0 0 var(--side-unreached);
-}
-.lane-badge.side-test {
-  box-shadow: inset 3px 0 0 var(--side-test);
 }
 .lane-badge.side-tooling {
   box-shadow: inset 3px 0 0 var(--side-tooling);

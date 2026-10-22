@@ -10,6 +10,7 @@ const edge = (from: string, to: string): DependencyEdge => ({
   occurrences: [],
   names: ["*"],
   via: [],
+  typeOnly: false,
 });
 
 const cluster = (folder: string) => [1, 2, 3, 4, 5].map((n) => `${folder}/f${n}.ts`);
@@ -21,11 +22,18 @@ describe("area detection", () => {
   const chat = cluster("src/lib/chat");
   const ids = [...billing, ...chat, "src/lone.ts"].map((path) => `module:${path}`);
   const edges = [...dense(billing), ...dense(chat), edge("src/lib/chat/f1.ts", "src/lib/billing/f1.ts")];
+  const detect = (moduleIds: readonly string[]) => detectAreas(moduleIds, edges, "server");
 
   it("groups files that import each other and names them by folder", () => {
-    const areas = detectAreas(ids, edges);
+    const areas = detect(ids);
     const top = areas.filter((area) => area.parent === null);
 
+    expect(top.map((area) => area.id)).toEqual([
+      "area:server:lib-billing",
+      "area:server:lib-chat",
+      "area:server:standalone",
+    ]);
+    expect(top.every((area) => area.side === "server")).toBe(true);
     expect(top.map((area) => [area.label, area.moduleIds.length])).toEqual([
       ["lib/billing", 5],
       ["lib/chat", 5],
@@ -38,18 +46,54 @@ describe("area detection", () => {
     expect(billingArea?.touchingImports).toBe(21);
   });
 
-  it("is deterministic", () => {
-    expect(detectAreas(ids.toReversed(), edges)).toEqual(detectAreas(ids, edges));
+  it("sets a file imported from almost everywhere aside before finding areas", () => {
+    const db = "src/lib/db.ts";
+    const areas = detectAreas(
+      [...ids, `module:${db}`],
+      [...edges, ...[...billing, ...chat].map((file) => edge(file, db))],
+      "server",
+    );
+    const top = areas.filter((area) => area.parent === null);
+
+    expect(top.map((area) => [area.id, area.label, area.moduleIds])).toEqual([
+      ["area:server:lib-billing", "lib/billing", billing.map((file) => `module:${file}`)],
+      ["area:server:lib-chat", "lib/chat", chat.map((file) => `module:${file}`)],
+      ["area:server:widely-used", "Widely used files", [`module:${db}`]],
+      ["area:server:standalone", "Standalone files", ["module:src/lone.ts"]],
+    ]);
+    expect(areas.filter((area) => area.moduleIds.includes(`module:${db}`)).length).toBe(1);
   });
 
-  it("assigns every scanned application file to an area", async () => {
+  it("sets nothing aside when no file stands out", () => {
+    expect(detect(ids).some((area) => area.id.endsWith(":widely-used"))).toBe(false);
+  });
+
+  it("is deterministic", () => {
+    expect(detect(ids.toReversed())).toEqual(detect(ids));
+  });
+
+  it("finds areas within each side, so an area never holds files of two sides", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const application = snapshot.modules.filter((module) =>
       ["client", "shared", "server"].includes(module.placement.side),
     );
+    const sideOfArea = new Map(snapshot.areas.map((area) => [area.id, area.side]));
 
     expect(application.every((module) => module.areaId !== null)).toBe(true);
-    expect(snapshot.modules.filter((module) => module.placement.side === "test")[0]?.areaId).toBeNull();
+    expect(application.every((module) => sideOfArea.get(module.areaId ?? "") === module.placement.side)).toBe(true);
+    expect(snapshot.modules.filter((module) => module.placement.side === "tooling")[0]?.areaId).toBeNull();
+  });
+
+  it("gives every file the same total folder weight whatever the folder size", () => {
+    const big = cluster("src/big").concat(["src/big/f6.ts", "src/big/f7.ts", "src/big/f8.ts"]);
+    const pair = ["src/pair/a.ts", "src/pair/b.ts"];
+    const areas = detectAreas(
+      [...big, ...pair].map((path) => `module:${path}`),
+      [],
+      "code",
+    );
+
+    expect(areas.filter((area) => area.parent === null).map((area) => area.moduleIds.length)).toEqual([8, 2]);
   });
 });
 

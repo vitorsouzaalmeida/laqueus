@@ -68,17 +68,13 @@ const laneInfo: Readonly<Record<Side, { label: string; description: string }>> =
     description:
       "Inside a SvelteKit app, but no entry point imports it at runtime. It may be unused, used only by tests or for types, or loaded in a way static imports do not show.",
   },
-  test: {
-    label: "Tests",
-    description: "Test, spec, story, mock and fixture files.",
-  },
   tooling: {
     label: "Tooling & config",
     description: "Config files and SvelteKit app files outside src/ (scripts, build and test setup).",
   },
 };
 
-const laneOrder: readonly Side[] = ["client", "shared", "server", "code", "unreached", "test", "tooling"];
+const laneOrder: readonly Side[] = ["client", "shared", "server", "code", "unreached", "tooling"];
 
 const minimumGroupSize = 4;
 const cell = { width: 160, height: 60 };
@@ -154,7 +150,7 @@ const isServerOnlyByName = (apps: readonly SvelteKitApp[], file: string) => {
   );
 };
 
-const isTest = (file: string) => testPatterns.some((pattern) => pattern.test(file));
+export const isTest = (file: string) => testPatterns.some((pattern) => pattern.test(file));
 
 const isTooling = (apps: readonly SvelteKitApp[], file: string) => {
   if (configPattern.test(file)) return true;
@@ -339,7 +335,7 @@ const explain = (side: Side, entry: EntryRule | undefined, serverOnlyName: boole
     return "Server-only by SvelteKit's rules ($lib/server or a .server file name).";
   }
 
-  if (side === "test" || side === "tooling" || side === "unreached" || side === "code" || !kit) {
+  if (side === "tooling" || side === "unreached" || side === "code" || !kit) {
     return laneInfo[side].description;
   }
 
@@ -355,34 +351,32 @@ export const buildStructure = (
   edges: readonly DependencyEdge[],
   apps: readonly SvelteKitApp[],
 ): Structure => {
-  const outgoing = edges.reduce(
+  const running = edges.filter((edge) => !edge.typeOnly);
+  const outgoing = running.reduce(
     (map, edge) => map.set(modulePath(edge.from), [...(map.get(modulePath(edge.from)) ?? []), modulePath(edge.to)]),
     new Map<string, string[]>(),
   );
   const importers = new Set(edges.filter((edge) => edge.from !== edge.to).map((edge) => modulePath(edge.to)));
   const next = (file: string) => outgoing.get(file) ?? [];
 
-  const tests = new Set(paths.filter(isTest));
-  const tooling = new Set(paths.filter((file) => !tests.has(file) && isTooling(apps, file)));
-  const application = paths.filter((file) => !tests.has(file) && !tooling.has(file));
+  const tooling = new Set(paths.filter((file) => isTooling(apps, file)));
+  const application = paths.filter((file) => !tooling.has(file));
   const entries = new Map(
     application.flatMap((file) => {
       const rule = entryRule(apps, file);
       return rule ? [[file, rule] as const] : [];
     }),
   );
-  const nextInApp = (file: string) => next(file).filter((target) => !tests.has(target));
   const fromClient = breadthFirst(
     [...entries].filter(([, rule]) => rule.side === "client").map(([file]) => file),
-    nextInApp,
+    next,
   );
   const fromServer = breadthFirst(
     [...entries].filter(([, rule]) => rule.side === "server").map(([file]) => file),
-    nextInApp,
+    next,
   );
 
   const sideOf = (file: string): Side => {
-    if (tests.has(file)) return "test";
     if (tooling.has(file)) return "tooling";
 
     const rule = entries.get(file);
@@ -401,7 +395,7 @@ export const buildStructure = (
   };
 
   const sides = new Map(paths.map((file) => [file, sideOf(file)]));
-  const warnings = edges.flatMap((edge): Diagnostic[] => {
+  const warnings = running.flatMap((edge): Diagnostic[] => {
     const from = modulePath(edge.from);
     const to = modulePath(edge.to);
     const clientSide = fromClient.has(from) && !isServerOnlyByName(apps, from) && !fromServer.has(from);
@@ -424,7 +418,7 @@ export const buildStructure = (
   const placements = new Map(
     [...sides].map(([file, side]): [string, Placement] => {
       const rule = entries.get(file);
-      const isRoot = side === "code" || side === "test" || side === "tooling";
+      const isRoot = side === "code" || side === "tooling";
 
       return [
         moduleId(file),

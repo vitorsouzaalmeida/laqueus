@@ -21,8 +21,9 @@ export const defaultOutput = ".laqueus";
 export const exportUsage = `Usage: laqueus export [part] [-C <dir>] [-o <dir>] [--no-logic]
 
   Writes the project's metrics as a directory of Markdown pages an AI agent can
-  navigate: one page per source file, one _index.md per source directory, and
-  _map/ with the viewer's sides and areas. The directory is replaced each time.
+  navigate: one folder per side and one page per area, sub-area or folder, named
+  like the parts of "laqueus list", with _files.md mapping every source file to
+  its page. Test files are not scanned. The directory is replaced each time.
 
   part         a part from "laqueus list", e.g. server; defaults to the whole project
   -C <dir>     the project, defaults to the current working directory

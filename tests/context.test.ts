@@ -2,11 +2,10 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { table } from "../src/context/markdown";
 import { buildPages } from "../src/context/pages";
 import { createFacts } from "../src/facts";
 import type { GraphSnapshot } from "../src/model";
-import { buildTree, traySides } from "../src/tree";
+import { buildTree, partNames, traySides } from "../src/tree";
 import { fixture, scan } from "./helpers";
 
 const pagesOf = (snapshot: GraphSnapshot, exportedAt = "2026-10-20T12:00:00.000Z", scope?: string) => {
@@ -18,33 +17,31 @@ const pagesOf = (snapshot: GraphSnapshot, exportedAt = "2026-10-20T12:00:00.000Z
   return { pages: result.value, tree };
 };
 
-const directoriesOf = (snapshot: GraphSnapshot) =>
-  new Set(
-    snapshot.modules.flatMap((module) =>
-      module.path
-        .split("/")
-        .slice(0, -1)
-        .map((_, index, parts) => parts.slice(0, index + 1).join("/")),
-    ),
-  );
-
 describe("context pages", () => {
-  it("mirrors the source tree: a page per file, an index per directory", async () => {
+  it("writes one page per part, named like the parts of laqueus list", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
-    const { pages } = pagesOf(snapshot);
+    const { pages, tree } = pagesOf(snapshot);
+    const names = partNames(tree);
+    const expected = [...tree.nodes.values()]
+      .filter((node) => node.kind !== "root")
+      .map((node) => (node.children.length > 0 ? `${names.get(node.id)}/_index.md` : `${names.get(node.id)}.md`));
 
-    expect(pages.has("_index.md")).toBe(true);
-    snapshot.modules.forEach((module) => expect(pages.has(`${module.path}.md`)).toBe(true));
-    directoriesOf(snapshot).forEach((directory) => expect(pages.has(`${directory}/_index.md`)).toBe(true));
+    expected.forEach((page) => expect(pages.has(page)).toBe(true));
+    expect(pages.has("server/_index.md")).toBe(true);
+    expect(pages.get("server/src-lib.md")).toContain("- Kind: area");
+    expect([...pages.keys()].filter((page) => page.startsWith("src/"))).toEqual([]);
   });
 
-  it("lists every entry of a directory in its index", async () => {
+  it("maps every source file to its part page", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
-    const index = pagesOf(snapshot).pages.get("src/lib/_index.md") ?? "";
+    const files = pagesOf(snapshot).pages.get("_files.md") ?? "";
 
-    ["`components/`", "`server/`", "`client-only.ts`", "`format.ts`", "`format.test.ts`", "`orphan.ts`"].forEach(
-      (entry) => expect(index).toContain(`| ${entry} |`),
+    const lines = files.split("\n");
+
+    snapshot.modules.forEach((module) =>
+      expect(lines.some((line) => line.startsWith(`- \`${module.path}\` → \``) && line.endsWith(".md`"))).toBe(true),
     );
+    expect(files).toContain("- `src/lib/server/db.ts` → `server/src-lib.md`");
   });
 
   it("starts every page with a one-line summary", async () => {
@@ -58,26 +55,24 @@ describe("context pages", () => {
       expect({ page, heading: first.startsWith("#") }).toEqual({ page, heading: false });
       expect({ page, second }).toEqual({ page, second: "" });
     });
-    snapshot.modules.forEach((module) =>
-      expect(pages.get(`${module.path}.md`)?.startsWith(`${module.path}: ${module.placement.side} · `)).toBe(true),
-    );
   });
 
-  it("writes one map page per node of the viewer's tree", async () => {
-    const snapshot = await scan(fixture("sveltekit-sides"));
-    const { pages, tree } = pagesOf(snapshot);
-    const mapPages = [...pages.keys()].filter((page) => page.startsWith("_map/") && page.endsWith("/_index.md"));
+  it("writes lists, never tables", async () => {
+    const { pages } = pagesOf(await scan(fixture("sveltekit-sides")));
 
-    expect(mapPages).toHaveLength(tree.nodes.size);
-    expect(pages.get("_map/server/_index.md")).toContain("- Kind: side");
+    pages.forEach((content, page) => expect({ page, table: /^\|/m.test(content) }).toEqual({ page, table: false }));
   });
 
-  it("writes facts as greppable lines", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
+  it("describes every file of a part on the part page, as greppable facts", async () => {
+    const { pages } = pagesOf(await scan(fixture("topology")));
+    const part = pages.get("code/src.md") ?? "";
 
-    expect(pages.get("src/a.ts.md")).toContain("- Cycle: #1 (`src/b.ts`)");
-    expect(pages.get("src/lone.ts.md")).toContain("- Cycle: none");
+    expect(part).toContain("### `src/a.ts`");
+    expect(part).toContain("- Cycle: #1 (`src/b.ts`)");
+    expect(part).toContain("- Fan-in: 1 (low, P0 of 2 ranked code files)");
+    expect(part).toContain("- Fan-in: 0 (not ranked: entry point)");
+    expect(part).toContain("- Role: ");
+    expect(part).toContain("- Visibility fan-in: 3");
     expect(pages.get("_cycles.md")).toContain("## Cycle #1");
   });
 
@@ -91,119 +86,109 @@ describe("context pages", () => {
     expect(second.get("_index.md")).toContain("- Exported: 2026-10-21T08:30:00.000Z");
   });
 
-  it("escapes pipes inside table cells", () => {
-    expect(table(["Name"], [["a|b"]])).toContain("| a\\|b |");
-  });
-
-  it("adds band lines to every file page", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
-    snapshot.modules.forEach((module) => {
-      const content = pages.get(`${module.path}.md`) ?? "";
-      const population = snapshot.modules.filter((other) => other.placement.side === module.placement.side).length;
-      expect(content).toContain(`of ${population} ${module.placement.side} files)`);
-      expect(content).toContain("- Fan-in band:");
-      expect(content).toContain("- Fan-out band:");
-      expect(content).toContain("- Hub:");
-    });
-  });
-
-  it("classifies fan-in using project percentiles", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
-
-    expect(pages.get("src/b.ts.md")).toContain("- Fan-in band: moderate");
-    expect(pages.get("src/lone.ts.md")).toContain("- Fan-in band: low (P0");
-  });
-
-  it("marks CC band on functions", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
-    const bPage = pages.get("src/b.ts.md") ?? "";
-
-    expect(bPage).toContain("- CC band: low");
-  });
-
-  it("labels cycle severity and density", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
-    const cycles = pages.get("_cycles.md") ?? "";
+  it("labels cycle severity, loops and what it takes to break a cycle", async () => {
+    const cycles = pagesOf(await scan(fixture("topology"))).pages.get("_cycles.md") ?? "";
 
     expect(cycles).toContain("- Severity: minor");
-    expect(cycles).toContain("- Density:");
+    expect(cycles).toContain("- Loops: 1");
+    expect(cycles).toContain("- Smallest cut: 1 import, 2 choices (every choice of up to 2 imports was tried)");
+    expect(cycles).toContain("  - Choice 1: `src/a.ts` → `src/b.ts` (line 1: `b`)");
+    expect(cycles).toContain("- Without type imports: the same cycle");
   });
 
-  it("shows hub: no for files not in both top quartiles", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
+  it("writes the definitions of every judgement", async () => {
+    const definitions = pagesOf(await scan(fixture("topology"))).pages.get("_definitions.md") ?? "";
 
-    expect(pages.get("src/lone.ts.md")).toContain("- Hub: no");
+    [
+      "## CC band",
+      "## Branches",
+      "## Inclusive CC",
+      "## Excess CC",
+      "## Fan-in band, Fan-out band",
+      "## Visibility fan-in, Visibility fan-out",
+      "## Role",
+      "## Cycle severity",
+      "## Loops",
+      "## Layer order",
+      "## Widely used files",
+    ].forEach((heading) => expect(definitions).toContain(heading));
+    expect(definitions).not.toContain("## Hub");
+    expect(definitions).not.toContain("## Island");
   });
 
-  it("writes judgement band definitions", async () => {
-    const snapshot = await scan(fixture("topology"));
-    const { pages } = pagesOf(snapshot);
-    const defs = pages.get("_definitions.md") ?? "";
-
-    expect(defs).toContain("## CC band");
-    expect(defs).toContain("## Fan-in band, Fan-out band");
-    expect(defs).toContain("## Hub");
-    expect(defs).toContain("## Cycle severity");
-    expect(defs).toContain("## Density");
-  });
-
-  it("shows the judgement bands section on the index page", async () => {
-    const snapshot = await scan(fixture("sveltekit-sides"));
-    const { pages } = pagesOf(snapshot);
-    const index = pages.get("_index.md") ?? "";
+  it("shows the judgement bands on the index page and links health first", async () => {
+    const index = pagesOf(await scan(fixture("sveltekit-sides"))).pages.get("_index.md") ?? "";
 
     expect(index).toContain("## Judgement bands");
-    expect(index).toContain("- Hubs:");
+    expect(index).toContain("- Visibility medians, server:");
+    expect(index).toContain("- Fan-in, client: ");
+    expect(index.indexOf("_health.md")).toBeLessThan(index.indexOf("_findings.md"));
   });
 
-  it("writes a findings page and an areas page", async () => {
+  it("writes findings, areas and health pages", async () => {
     const { pages } = pagesOf(await scan(fixture("coupling")));
     const findings = pages.get("_findings.md") ?? "";
     const areas = pages.get("_areas.md") ?? "";
+    const health = pages.get("_health.md") ?? "";
 
-    expect(findings.split("\n")[0]).toMatch(
-      /^Findings: 0 functions in the high CC band · 0 hubs · 0 cycles · 1 area cycle$/,
+    expect(findings.split("\n")[0]).toBe(
+      "Findings: 0 functions in the high CC band · 0 functions holding logic in inner functions · 0 cycles",
     );
-    expect(findings).toContain("## CC distribution");
-    expect(findings).toContain("- Median CC: 1");
-    expect(findings).toContain("Area cycle #1 (2 areas): `src/x`, `src/y`");
-    expect(areas).toContain("## Stable areas depending on less stable ones");
-    expect(areas).toContain("| `src/x` | 0.33 | `src/y` | 0.50 | 1 |");
+    expect(findings).toContain("## Complexity by side");
+    expect(findings).toContain("- code: 33.3% (1 of 3 imports between areas) point back");
+    expect(areas).toContain("- Layer order: `src/z`, `src/x`, `src/y`");
+    expect(areas).toContain("- `src/y/y3.ts` → `src/x/x3.ts` (line 1: `x3`)");
+    expect(areas).toContain("- `src/x` and `src/y`: 1 → and 1 ←");
+    expect(health).toContain("## Code (code), 9 files");
+    expect(health).toContain("- Imports pointing back: 33.3% (1 of 3 imports between areas)");
+    expect(health).toContain("- Modularity of folders:");
   });
 
-  it("lists the imports inside each cycle and the smallest cut", async () => {
-    const { pages } = pagesOf(await scan(fixture("topology")));
-    const cycles = pages.get("_cycles.md") ?? "";
-
-    expect(cycles).toContain("- Smallest cut: 1 import, 2 choices");
-    expect(cycles).toContain("  - Choice 1: `src/a.ts` → `src/b.ts` (line 1: `b`)");
-  });
-
-  it("shows barrels and imports through them on file pages", async () => {
+  it("shows imports through re-exports and type-only imports on part pages", async () => {
     const { pages } = pagesOf(await scan(fixture("barrels")));
+    const all = [...pages.values()].join("\n");
 
-    expect(pages.get("src/lib/index.ts.md")).toContain("- Barrel: yes");
-    expect(pages.get("src/main.ts.md")).toContain("- `src/lib/alpha.ts` (line 1, via `src/lib/index.ts`)");
-    expect(pages.get("src/lib/alpha.ts.md")).toContain("- Test fan-in: 1");
+    expect(all).toContain("- Barrel: yes");
+    expect(all).toContain("  - `src/lib/alpha.ts` (line 1, via `src/lib/index.ts`)");
+    expect(all).toContain("  - `src/lib/types.ts` (line 4, types only)");
   });
 
-  it("refuses a source tree whose pages would overwrite generated ones", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "laqueus-collision-"));
+  it("details only the functions worth a look", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "laqueus-notable-"));
 
     try {
-      await mkdir(path.join(root, "_map"));
-      await writeFile(path.join(root, "_map", "x.ts"), "export const x = 1;\n");
+      await mkdir(path.join(root, "src"));
+      await writeFile(
+        path.join(root, "src", "rules.ts"),
+        `export const simple = (a: boolean) => (a ? 1 : 0);
+export const pick = (n: number) => {
+  if (n === 1) return "a";
+  if (n === 2) return "b";
+  if (n === 3) return "c";
+  if (n === 4) return "d";
+  if (n === 5) return "e";
+  if (n === 6) return "f";
+  if (n === 7) return "g";
+  if (n === 8) return "h";
+  if (n === 9) return "i";
+  if (n === 10) return "j";
+  if (n === 11) return "k";
+  return n > 0 && n < 100 ? "many" : "none";
+};
+`,
+      );
 
-      const snapshot = await scan(root);
-      const tree = buildTree(snapshot, { grouping: "areas", tray: new Set(traySides) });
-      const result = buildPages(createFacts(snapshot, null), tree, { exportedAt: "2026-10-20T12:00:00.000Z" });
+      const { pages } = pagesOf(await scan(root));
+      const part =
+        [...pages.entries()].find(([page]) => page.startsWith("code/") && !page.endsWith("_index.md"))?.[1] ?? "";
 
-      expect(result.ok).toBe(false);
+      expect(part).toContain("#### `pick` (line 2)");
+      expect(part).toContain("- CC: 14");
+      expect(part).toContain("- Branches: 13");
+      expect(part).not.toContain("#### `simple`");
+      expect(part).toContain("- Functions above CC 10: 1");
+      expect(part).toContain("- Excess CC: 4");
+      expect(pages.get("_findings.md")).toContain("- `src/rules.ts` (`");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -212,18 +197,13 @@ describe("context pages", () => {
   it("writes only the pages of one part when scoped", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const { pages } = pagesOf(snapshot, "2026-10-20T12:00:00.000Z", "side:server");
-    const server = snapshot.modules.filter((module) => module.placement.side === "server");
-    const filePages = [...pages.keys()].filter((page) => !page.startsWith("_") && !page.endsWith("_index.md"));
+    const partPages = [...pages.keys()].filter((page) => !page.startsWith("_"));
 
-    expect(filePages.toSorted()).toEqual(server.map((module) => `${module.path}.md`).toSorted());
-    expect(
-      [...pages.keys()].filter((page) => page.startsWith("_map/")).every((page) => page.startsWith("_map/server/")),
-    ).toBe(true);
-    expect(pages.get("_index.md")).toContain("- Files in scope: 5 of 16");
-    expect(pages.get("src/lib/_index.md")).toContain("| `server/` |");
-    expect(pages.get("src/lib/_index.md")).not.toContain("| `format.ts` |");
-    expect(pages.has("src/lib/components/_index.md")).toBe(false);
-    expect(pages.get("_map/server/_index.md")).toContain("| not in this export |");
+    expect(partPages.toSorted()).toEqual(["server/_index.md", "server/src-lib.md"]);
+    expect(pages.get("_index.md")).toContain("- Files in scope: 5 of 15");
+    expect(pages.get("_files.md")).toContain("`src/lib/server/db.ts` → `server/src-lib.md`");
+    expect(pages.get("_files.md")).not.toContain("`src/lib/format.ts`");
+    expect(pages.get("server/src-lib.md")).toContain("(not in this export)");
   });
 
   it("refuses an unknown scope", async () => {

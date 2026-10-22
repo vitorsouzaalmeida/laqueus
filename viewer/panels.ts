@@ -14,6 +14,8 @@ import type {
   RouteRole,
   Side,
 } from "../src/model";
+import { widelyUsedShare } from "../src/areas";
+import { isStandaloneArea, isWidelyUsedArea } from "../src/model";
 import { type Child, basename, formatCC, groupBy, h, plural } from "./dom";
 import { type Index, fullRef, lineRef, routeLabel } from "./data";
 import { structuralKinds } from "./flow";
@@ -279,8 +281,11 @@ const groupingReason = (ctx: PanelContext, node: TreeNode) => {
   if (node.area) {
     const share =
       node.area.touchingImports === 0 ? 0 : Math.round((100 * node.area.internalImports) / node.area.touchingImports);
-    return node.area.id === "area:standalone"
-      ? "Files that neither import nor are imported by another file, and have no folder mates."
+    if (isWidelyUsedArea(node.area.id))
+      return `Imported by at least ${widelyUsedShare * 100}% of this side's files and far more than the rest, so set aside before the areas were found; imports of them do not pull areas together.`;
+
+    return isStandaloneArea(node.area.id)
+      ? "Files that neither import nor are imported by another file of this side, apart from widely used files, and have no folder mates."
       : `Grouped because these files mostly import each other: ${node.area.internalImports} of the ${node.area.touchingImports} imports that touch them (${share}%) stay inside. Named after the folder that holds most of them.`;
   }
 
@@ -372,7 +377,12 @@ const importList = (ctx: PanelContext, edges: readonly DependencyEdge[], side: "
     edges
       .toSorted((a, b) => a[side].localeCompare(b[side]))
       .map((edge) =>
-        h("li", {}, moduleLink(ctx, edge[side]), h("span", { class: "aside" }, occurrenceLines(edge.occurrences))),
+        h(
+          "li",
+          {},
+          moduleLink(ctx, edge[side]),
+          h("span", { class: "aside" }, `${occurrenceLines(edge.occurrences)}${edge.typeOnly ? " · types only" : ""}`),
+        ),
       ),
     side === "to" ? "Imports no local files." : "Not imported by any local file.",
   );
@@ -477,11 +487,13 @@ export const modulePanel = (
       "div",
       { class: "metrics" },
       metric("Fan-in", metrics.fanIn),
-      metric("Test fan-in", metrics.testFanIn),
       metric("Fan-out", metrics.fanOut),
+      metric("Visibility in", metrics.visibilityFanIn),
+      metric("Visibility out", metrics.visibilityFanOut),
       metric("Functions", metrics.functionCount),
       metric("Max CC", formatCC(metrics.maxCC)),
-      metric("Mean CC", formatCC(metrics.meanCC)),
+      metric("Decisions", metrics.decisions),
+      metric("Excess CC", metrics.excessCC),
       metric(
         "Cycle",
         metrics.cycleGroup === null ? "none" : `#${metrics.cycleGroup + 1}`,
@@ -500,13 +512,7 @@ export const modulePanel = (
       ? []
       : section(
           "Import cycle",
-          h(
-            "p",
-            { class: "note" },
-            cycleMembers.length === 1
-              ? "This file imports itself."
-              : `This file is in a cycle of ${plural(cycleMembers.length, "file")}:`,
-          ),
+          h("p", { class: "note" }, `This file is in a cycle of ${plural(cycleMembers.length, "file")}:`),
           list(
             cycleMembers
               .filter((member) => member.id !== moduleId)
@@ -557,6 +563,9 @@ export const functionPanel = (ctx: PanelContext, functionId: string): HTMLElemen
       "div",
       { class: "metrics" },
       metric("CC", fn.complexity),
+      metric("Branches", fn.branches),
+      ...(fn.inclusive === fn.complexity ? [] : [metric("Inclusive CC", fn.inclusive)]),
+      ...(fn.outerWrites === 0 ? [] : [metric("Outer writes", fn.outerWrites)]),
       metric("Calls", (ctx.index.callsFrom.get(fn.id) ?? []).length),
       metric("Called by", (ctx.index.callsTo.get(fn.id) ?? []).length),
     ),

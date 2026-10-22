@@ -1,6 +1,6 @@
 import type { TSESTree } from "@typescript-eslint/types";
 import { type FunctionLike, type VisitorKeys, descendants, isFunction, locationOf } from "./ast";
-import { decisionsIn, isOwnershipBoundary } from "./metrics";
+import { decisionWeight, decisionsIn, isOwnershipBoundary } from "./metrics";
 import {
   type FunctionLogic,
   type LogicEdge,
@@ -584,5 +584,76 @@ export const buildLogic = (input: LogicInput): FunctionLogic => {
     edges,
     outline: built.outline,
     source: { firstLine, lines: code.split("\n").slice(firstLine - 1, lastLine) },
+  };
+};
+
+export type MarkupInput = {
+  id: string;
+  name: string;
+  file: string;
+  code: string;
+  complexity: number;
+  owned: readonly TSESTree.Node[];
+  lines: { start: number; end: number };
+};
+
+const markupKinds: Readonly<Record<string, LogicNodeKind>> = {
+  SvelteEachBlock: "loop",
+  SvelteAwaitCatchBlock: "catch",
+};
+
+const markupNode = (id: string, kind: LogicNodeKind, label: string, line: number, weight: number): LogicNode => ({
+  id,
+  kind,
+  label,
+  lines: { start: line, end: line },
+  weight,
+  calls: [],
+  nested: [],
+  region: null,
+  unreachable: false,
+  awaits: false,
+});
+
+export const buildMarkupLogic = (input: MarkupInput): FunctionLogic => {
+  const source = input.code.split("\n");
+  const weighted = input.owned
+    .filter((node) => decisionWeight(node) > 0)
+    .reduce((map, node) => {
+      const line = node.loc.start.line;
+      const known = map.get(line);
+
+      return map.set(line, {
+        weight: (known?.weight ?? 0) + decisionWeight(node),
+        kind: known?.kind ?? markupKinds[node.type] ?? "decision",
+      });
+    }, new Map<number, { weight: number; kind: LogicNodeKind }>());
+  const steps = [...weighted].toSorted(([a], [b]) => a - b);
+  const nodes = [
+    markupNode("n0", "start", input.name, input.lines.start, 0),
+    ...steps.map(([line, step], index) =>
+      markupNode(`n${index + 1}`, step.kind, shorten(source[line - 1] ?? ""), line, step.weight),
+    ),
+    markupNode(`n${steps.length + 1}`, "end", "end of template", input.lines.end, 0),
+  ];
+  const edges: LogicEdge[] = nodes.slice(1).map((target, index) => ({
+    id: `e${index}`,
+    from: nodes[index]?.id ?? "n0",
+    to: target.id,
+    label: "",
+    kind: "normal",
+  }));
+
+  return {
+    functionId: input.id,
+    name: input.name,
+    file: input.file,
+    complexity: input.complexity,
+    nodes,
+    edges,
+    outline: nodes
+      .filter((entry) => entry.weight > 0)
+      .map((entry) => ({ text: entry.label, nodeId: entry.id, children: [] })),
+    source: { firstLine: input.lines.start, lines: source.slice(input.lines.start - 1, input.lines.end) },
   };
 };

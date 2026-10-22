@@ -106,7 +106,7 @@ describe("cyclomatic complexity", () => {
     expect({
       a: score("a"),
       b: score("b"),
-      inner: score("inner"),
+      inner: score("b › inner"),
       loops: score("loops"),
       choose: score("choose"),
       guarded: score("guarded"),
@@ -174,6 +174,106 @@ describe("cyclomatic complexity", () => {
     ).functions;
     expect(svelte.map((fn) => ({ name: fn.name, complexity: fn.complexity, line: fn.location.line }))).toEqual([
       { name: "pick", complexity: 2, line: 2 },
+      { name: "<template>", complexity: 2, line: 7 },
     ]);
+  });
+});
+
+describe("complexity beyond one function", () => {
+  const measured = analyzeCode(
+    "shapes.ts",
+    `function list(kind: string, a: boolean, b: boolean) {
+  return kind === "a" || kind === "b" || kind === "c" || (a && b);
+}
+function counter(start: number) {
+  let count = start;
+  let label = "";
+  const fixed = 1;
+  const step = () => {
+    count += fixed;
+    if (count > 10) count = 0;
+  };
+  const rename = (next?: string) => {
+    [label] = [next ?? label];
+  };
+  return { step, rename };
+}
+class Box {
+  size = 1 > 0 ? 1 : 0;
+  grow(by: number) {
+    if (by > 0) this.size += by;
+  }
+}
+`,
+  );
+  const fn = (name: string) => measured.functions.find((candidate) => candidate.name === name);
+
+  it("counts branches apart from conditions", () => {
+    expect(fn("list")).toMatchObject({ complexity: 5, branches: 1 });
+  });
+
+  it("adds the decisions of inner functions into the inclusive CC", () => {
+    expect(fn("counter")).toMatchObject({ complexity: 1, inclusive: 2 });
+    expect(fn("counter › step")).toMatchObject({ complexity: 2, inclusive: 2 });
+  });
+
+  it("counts the outer let, var and parameters that inner functions assign to", () => {
+    expect(fn("counter")?.outerWrites).toBe(2);
+    expect(fn("counter › step")?.outerWrites).toBe(0);
+  });
+
+  it("measures a class as 1 plus the decisions of its methods and field initialisers", () => {
+    expect(measured.classes.map((cls) => ({ name: cls.name, inclusive: cls.inclusive }))).toEqual([
+      { name: "Box", inclusive: 3 },
+    ]);
+  });
+});
+
+describe("Svelte templates", () => {
+  const component = analyzeCode(
+    "List.svelte",
+    `<script lang="ts">
+  let { items, ok } = $props();
+  function go() {}
+</script>
+{#snippet row(item)}
+  <li class:active={item.on || ok}>{item.name ?? "x"}</li>
+{/snippet}
+{#if ok && items}
+  <p>a</p>
+{:else if items.length > 2}
+  <p>b</p>
+{:else}
+  <p>c</p>
+{/if}
+{#each items.filter((i) => i.ok) as item}
+  {@render row(item)}
+{/each}
+{#await go()}
+  wait
+{:then v}
+  {v ? 1 : 2}
+{:catch e}
+  err
+{/await}
+<button onclick={() => ok && go()}>x</button>`,
+  ).functions;
+  const byName = new Map(component.map((fn) => [fn.name, fn]));
+
+  it("measures the markup as one function with its blocks and conditions", () => {
+    expect(byName.get("<template>")).toMatchObject({ complexity: 8, branches: 7, location: { line: 5 } });
+  });
+
+  it("measures snippets and inline functions on their own", () => {
+    expect([...byName.keys()]).toEqual([
+      "go",
+      "<template>",
+      "<template> › row",
+      "<template> › items.filter callback",
+      "<template> › onclick callback",
+    ]);
+    expect(byName.get("<template> › row")).toMatchObject({ complexity: 2, branches: 1 });
+    expect(byName.get("<template> › onclick callback")).toMatchObject({ complexity: 2 });
+    expect(byName.get("<template>")?.inclusive).toBe(10);
   });
 });

@@ -2,9 +2,12 @@ export type CcBand = "low" | "moderate" | "high";
 export type FanBand = "low" | "moderate" | "high" | "extreme";
 export type CycleSeverityLevel = "minor" | "moderate" | "severe";
 
+export const excessFrom = 10;
+export const highFrom = 16;
+
 export const ccBand = (cc: number): CcBand => {
-  if (cc <= 10) return "low";
-  if (cc <= 15) return "moderate";
+  if (cc <= excessFrom) return "low";
+  if (cc < highFrom) return "moderate";
   return "high";
 };
 
@@ -50,19 +53,31 @@ export const rankScale = (values: readonly number[]): RankScale => {
   };
 };
 
-export type CycleSeverity = { severity: CycleSeverityLevel; edges: number; density: number | null };
+export type CycleSeverity = { severity: CycleSeverityLevel; edges: number; loops: number };
 
-export const cycleSeverity = (size: number, edgeCount: number): CycleSeverity => {
-  const severity: CycleSeverityLevel = size <= 2 ? "minor" : size <= 5 ? "moderate" : "severe";
-  const maxEdges = size * (size - 1);
-  const density = maxEdges > 0 ? Math.round((edgeCount / maxEdges) * 100) / 100 : null;
-  return { severity, edges: edgeCount, density };
+export const cycleSeverity = (size: number, edgeCount: number): CycleSeverity => ({
+  severity: size <= 2 ? "minor" : size <= 5 ? "moderate" : "severe",
+  edges: edgeCount,
+  loops: edgeCount - size + 1,
+});
+
+export type Role = "central" | "shared" | "control" | "peripheral";
+
+export const median = (values: readonly number[]): number => {
+  const sorted = values.toSorted((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  if (sorted.length === 0) return 0;
+
+  return sorted.length % 2 === 1 ? (sorted[middle] ?? 0) : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 };
 
-export const hubRank = 75;
-export const hubFloor = 5;
+export const role = (fanIn: number, fanOut: number, medians: { fanIn: number; fanOut: number }): Role => {
+  const many = fanIn > medians.fanIn;
+  const much = fanOut > medians.fanOut;
 
-export type Ranked = { value: number; rank: number };
-
-export const isHub = (fanIn: Ranked, fanOut: Ranked): boolean =>
-  [fanIn, fanOut].every((measure) => measure.rank >= hubRank && measure.value >= hubFloor);
+  if (many && much) return "central";
+  if (many) return "shared";
+  if (much) return "control";
+  return "peripheral";
+};
