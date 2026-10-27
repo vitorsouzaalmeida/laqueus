@@ -3,7 +3,6 @@ import { fileLogic } from "../src/analyze";
 import { bandShares, branchStep, createFacts } from "../src/facts";
 import type { FunctionLogic, GraphSnapshot } from "../src/model";
 import { buildTree, traySides } from "../src/tree";
-import { buildView } from "../viewer/map";
 import { fixture, scan } from "./helpers";
 
 const treeOf = (snapshot: GraphSnapshot) => buildTree(snapshot, { grouping: "areas", tray: new Set(traySides) });
@@ -29,7 +28,7 @@ describe("export facts", () => {
     });
   });
 
-  it("counts crossings and child stats the way the viewer map does", async () => {
+  it("counts the imports crossing out of a part", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
     const facts = createFacts(snapshot, null);
     const tree = treeOf(snapshot);
@@ -41,26 +40,15 @@ describe("export facts", () => {
     const crossings = facts.crossings(node.moduleIds, (id) =>
       branchStep(trail, [...(tree.pathOf.get(id) ?? ["root"]), id]),
     );
-    const view = buildView(snapshot, tree, "side:server");
-    const inside = view.items.filter((item) => !item.id.startsWith("stub:")).map((item) => item.id);
-    const linkCount = (from: string, to: string) =>
-      view.links.filter((link) => link.from === from && link.to === to).reduce((sum, link) => sum + link.count, 0);
+    const stats = facts.stats(node.moduleIds);
 
     expect(crossings.length).toBeGreaterThan(0);
-    crossings.forEach((crossing) => {
-      const stub = `stub:${crossing.key}`;
-      expect(inside.reduce((sum, id) => sum + linkCount(stub, id), 0)).toBe(crossing.incoming);
-      expect(inside.reduce((sum, id) => sum + linkCount(id, stub), 0)).toBe(crossing.outgoing);
-    });
-
-    buildView(snapshot, tree, "root").items.forEach((card) => {
-      const stats = facts.stats(card.moduleIds);
-      expect(card.entries).toBe(stats.entryPoints);
-      expect(card.maxCC).toBe(stats.maxCC);
-    });
+    expect(crossings.every((crossing) => crossing.incoming + crossing.outgoing > 0)).toBe(true);
+    expect(crossings.reduce((sum, crossing) => sum + crossing.incoming, 0)).toBe(stats.imports.incoming);
+    expect(crossings.reduce((sum, crossing) => sum + crossing.outgoing, 0)).toBe(stats.imports.outgoing);
   });
 
-  it("numbers cycles from 1 like the viewer", async () => {
+  it("numbers cycles from 1", async () => {
     const snapshot = await scan(fixture("topology"));
     const facts = createFacts(snapshot, null);
     const a = snapshot.modules.find((module) => module.path === "src/a.ts");

@@ -14,10 +14,9 @@
     "dist"
   ],
   "scripts": {
-    "dev": "tsx src/dev.ts",
-    "build": "tsdown && vite build",
+    "build": "tsdown",
     "test": "vitest run",
-    "check-types": "tsc -p . && tsc -p viewer && tsc -p tests && svelte-check --tsconfig ./viewer/tsconfig.json --threshold warning",
+    "check-types": "tsc -p . && tsc -p tests",
     "lint": "oxlint --type-aware",
     "format": "oxfmt",
     "format:check": "oxfmt --check"
@@ -33,21 +32,13 @@
     "typescript": "5.9.2"
   },
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "^7.3.1",
-    "@types/d3-force": "^3.0.10",
     "@types/node": "^26.6.5",
     "@typescript-eslint/types": "^8.71.2",
-    "@xyflow/svelte": "^1.7.0",
-    "d3-force": "^3.0.0",
     "eslint": "^10.12.0",
     "oxfmt": "^0.73.0",
     "oxlint": "^1.88.0",
     "oxlint-tsgolint": "^7.0.2004",
-    "playwright-core": "^1.64.1",
-    "svelte-check": "^4.7.6",
     "tsdown": "^0.23.1",
-    "tsx": "^4.23.15",
-    "vite": "^8.3.4",
     "vitest": "^4.1.12"
   }
 }

@@ -12,8 +12,6 @@ export type ModuleMetrics = {
   cycleGroup: number | null;
 };
 
-export type Point = { x: number; y: number };
-
 export type Side = "client" | "shared" | "server" | "code" | "unreached" | "tooling";
 
 export type Placement = {
@@ -33,7 +31,6 @@ export type ModuleNode = {
   areaId: string | null;
   subAreaId: string | null;
   depth: number;
-  position: Point;
   externals: string[];
   barrel: boolean;
 };
@@ -72,8 +69,6 @@ export type Route = {
 export type Lane = { side: Side; label: string; description: string };
 
 export type ModuleGroup = { id: string; side: Side; directory: string; moduleIds: string[] };
-
-export type GroupEdge = { from: string; to: string; count: number };
 
 export type FunctionNode = {
   id: string;
@@ -133,7 +128,6 @@ export type GraphSnapshot = {
   framework: "sveltekit" | null;
   lanes: Lane[];
   groups: ModuleGroup[];
-  groupEdges: GroupEdge[];
   areas: Area[];
   routes: Route[];
   modules: ModuleNode[];

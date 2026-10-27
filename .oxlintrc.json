@@ -19,14 +19,6 @@
     "typescript/no-unsafe-enum-comparison": "off",
     "typescript/no-unsafe-type-assertion": "off"
   },
-  "overrides": [
-    {
-      "files": ["viewer/force-async.ts"],
-      "rules": {
-        "unicorn/require-post-message-target-origin": "off"
-      }
-    }
-  ],
   "env": {
     "builtin": true
   },

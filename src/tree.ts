@@ -23,8 +23,6 @@ export type Tree = {
 export const mainSides: readonly Side[] = ["client", "shared", "server", "code"];
 export const traySides: readonly Side[] = ["unreached", "tooling"];
 
-export const isTraySide = (value: unknown): value is Side => traySides.some((side) => side === value);
-
 const folderLabel = (directory: string) => (directory === "." ? "(project root)" : directory);
 
 export const buildTree = (data: GraphSnapshot, options: MapOptions): Tree => {
@@ -127,11 +125,6 @@ export const buildTree = (data: GraphSnapshot, options: MapOptions): Tree => {
 export const ancestry = (tree: Tree, nodeId: string): string[] => {
   const node = tree.nodes.get(nodeId);
   return node?.parent ? [...ancestry(tree, node.parent), nodeId] : [nodeId];
-};
-
-export const deepestNode = (tree: Tree, moduleId: string) => {
-  const path = tree.pathOf.get(moduleId);
-  return path ? path[path.length - 1] : undefined;
 };
 
 export const nodeStats = (modules: readonly ModuleNode[]) => {

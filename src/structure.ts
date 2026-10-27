@@ -3,11 +3,9 @@ import path from "node:path";
 import {
   type DependencyEdge,
   type Diagnostic,
-  type GroupEdge,
   type Lane,
   type ModuleGroup,
   type Placement,
-  type Point,
   type Route,
   type RouteFile,
   type RouteRole,
@@ -77,11 +75,6 @@ const laneInfo: Readonly<Record<Side, { label: string; description: string }>> =
 const laneOrder: readonly Side[] = ["client", "shared", "server", "code", "unreached", "tooling"];
 
 const minimumGroupSize = 4;
-const cell = { width: 160, height: 60 };
-const groupPadding = { x: 24, top: 44, bottom: 24 };
-const gaps = { group: 40, subColumn: 60, lane: 160 };
-const maximumColumns = 6;
-const targetAspect = 1.5;
 
 export type SvelteKitApp = { root: string };
 
@@ -90,11 +83,9 @@ export type Structure = {
   warnings: Diagnostic[];
   placements: Map<string, Placement>;
   groupOf: Map<string, string>;
-  positions: Map<string, Point>;
   depth: Map<string, number>;
   lanes: Lane[];
   groups: ModuleGroup[];
-  groupEdges: GroupEdge[];
 };
 
 const hasKitMarker = (directory: string) => {
@@ -212,63 +203,6 @@ export const groupDirectories = (files: readonly string[]): Map<string, string> 
       ? assignment
       : members.reduce((next, [file]) => next.set(file, parentDirectory(directory)), assignment);
   }, initial);
-};
-
-type Box = { id: string; width: number; height: number; members: { file: string; x: number; y: number }[] };
-
-const layoutGroup = (id: string, files: readonly string[], depth: ReadonlyMap<string, number>): Box => {
-  const levels = [...new Set(files.map((file) => depth.get(file) ?? 0))].toSorted((a, b) => a - b);
-  const rows = levels.flatMap((level) => {
-    const members = files.filter((file) => (depth.get(file) ?? 0) === level).toSorted((a, b) => a.localeCompare(b));
-    return Array.from({ length: Math.ceil(members.length / maximumColumns) }, (_, row) =>
-      members.slice(row * maximumColumns, (row + 1) * maximumColumns),
-    );
-  });
-  const columns = Math.max(1, ...rows.map((row) => row.length));
-
-  return {
-    id,
-    width: columns * cell.width + groupPadding.x * 2,
-    height: rows.length * cell.height + groupPadding.top + groupPadding.bottom,
-    members: rows.flatMap((row, rowIndex) =>
-      row.map((file, column) => ({
-        file,
-        x: groupPadding.x + column * cell.width + cell.width / 2,
-        y: groupPadding.top + rowIndex * cell.height + cell.height / 2,
-      })),
-    ),
-  };
-};
-
-type Packed = { positions: [string, Point][]; width: number; height: number };
-
-const packLane = (boxes: readonly Box[], targetHeight: number, originX: number): Packed => {
-  const step = (
-    remaining: readonly Box[],
-    state: { x: number; y: number; height: number; columnWidth: number; positions: [string, Point][] },
-  ): Packed => {
-    const [box, ...rest] = remaining;
-
-    if (!box) {
-      return { positions: state.positions, width: state.x + state.columnWidth - originX, height: state.height };
-    }
-
-    const wraps = state.y > 0 && state.y + box.height > targetHeight;
-    const x = wraps ? state.x + state.columnWidth + gaps.subColumn : state.x;
-    const y = wraps ? 0 : state.y;
-
-    return step(rest, {
-      x,
-      y: y + box.height + gaps.group,
-      height: Math.max(state.height, y + box.height),
-      columnWidth: wraps ? box.width : Math.max(state.columnWidth, box.width),
-      positions: [
-        ...state.positions,
-        ...box.members.map((member): [string, Point] => [member.file, { x: x + member.x, y: y + member.y }]),
-      ],
-    });
-  };
-  return step(boxes, { x: originX, y: 0, height: 0, columnWidth: 0, positions: [] });
 };
 
 const routeRoles: readonly { pattern: RegExp; role: RouteRole; side: "client" | "server" }[] = [
@@ -459,60 +393,16 @@ export const buildStructure = (
     }),
   );
 
-  const boxesBySide = new Map(
-    [...groupsBySide].map(([side, groups]) => [side, groups.map((group) => layoutGroup(group.id, group.files, depth))]),
-  );
-  const allBoxes = [...boxesBySide.values()].flat();
-  const packAll = (targetHeight: number) =>
-    lanesUsed.reduce<{ x: number; height: number; positions: [string, Point][] }>(
-      (state, side) => {
-        const lane = packLane(boxesBySide.get(side) ?? [], targetHeight, state.x);
-        return {
-          x: state.x + lane.width + gaps.lane,
-          height: Math.max(state.height, lane.height),
-          positions: [...state.positions, ...lane.positions],
-        };
-      },
-      { x: 0, height: 0, positions: [] },
-    );
-  const tallest = Math.max(1, ...allBoxes.map((box) => box.height));
-  const stacked = allBoxes.reduce((sum, box) => sum + box.height + gaps.group, 0);
-  const candidates = Array.from(
-    { length: 40 },
-    (_, step) => tallest * Math.pow(Math.max(stacked / tallest, 1), step / 39),
-  );
-  const aspectError = (layout: ReturnType<typeof packAll>) =>
-    Math.abs(Math.log((layout.x - gaps.lane) / Math.max(layout.height, 1) / targetAspect));
-  const packed = candidates
-    .map(packAll)
-    .reduce((best, layout) => (aspectError(layout) < aspectError(best) ? layout : best));
-
   const groupOf = new Map(
     [...groupsBySide.values()]
       .flat()
       .flatMap((group) => group.files.map((file) => [moduleId(file), group.id] as const)),
   );
-  const groupEdges = [
-    ...edges
-      .reduce((counts, edge) => {
-        const from = groupOf.get(edge.from);
-        const to = groupOf.get(edge.to);
-
-        if (!from || !to || from === to) return counts;
-
-        const key = `${from}\u0000${to}`;
-
-        return counts.set(key, { from, to, count: (counts.get(key)?.count ?? 0) + 1 });
-      }, new Map<string, GroupEdge>())
-      .values(),
-  ];
-
   return {
     routes: findRoutes(paths, apps),
     warnings,
     placements,
     groupOf,
-    positions: new Map(packed.positions.map(([file, point]) => [moduleId(file), point])),
     depth: new Map([...depth].map(([file, value]) => [moduleId(file), value])),
     lanes: lanesUsed.map((side) => ({
       side,
@@ -527,6 +417,5 @@ export const buildStructure = (
         moduleIds: group.files.map(moduleId),
       })),
     ),
-    groupEdges,
   };
 };

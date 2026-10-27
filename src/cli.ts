@@ -1,16 +1,11 @@
 #!/usr/bin/env node
 import { existsSync, realpathSync } from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Io, exportUsage, runExport } from "./commands/export";
 import { listUsage, runList } from "./commands/list";
-import { serve, serveUsage } from "./commands/serve";
 import { errorMessage } from "./model";
-import type { ServerOptions } from "./server";
 
-const usage = [serveUsage, listUsage, exportUsage].join("\n\n");
-
-const viewerDirectory = () => path.join(path.dirname(fileURLToPath(import.meta.url)), "viewer");
+const usage = [listUsage, exportUsage].join("\n\n");
 
 const processIo = (cwd: string): Io => ({
   cwd,
@@ -19,12 +14,7 @@ const processIo = (cwd: string): Io => ({
   now: () => new Date(),
 });
 
-export const main = async (
-  argv: readonly string[],
-  cwd: string,
-  viewerMiddleware?: ServerOptions["viewerMiddleware"],
-  io: Io = processIo(cwd),
-): Promise<number> => {
+export const main = async (argv: readonly string[], cwd: string, io: Io = processIo(cwd)): Promise<number> => {
   const [command, ...rest] = argv;
 
   switch (command) {
@@ -32,14 +22,14 @@ export const main = async (
       return runList(rest, io);
     case "export":
       return runExport(rest, io);
-    case "serve":
-      return serve(rest, cwd, viewerDirectory(), viewerMiddleware);
+    case undefined:
     case "--help":
     case "-h":
-      console.log(usage);
+      io.out(`${usage}\n`);
       return 0;
     default:
-      return serve(argv, cwd, viewerDirectory(), viewerMiddleware);
+      io.log(`Unknown command: ${command}\n\n${usage}`);
+      return 1;
   }
 };
 
