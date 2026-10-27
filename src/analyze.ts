@@ -858,12 +858,7 @@ const validateRoot = async (input: string): Promise<Result<string>> => {
 
 const areaSides: readonly Side[] = ["client", "shared", "server", "code"];
 
-export type AnalysisCache = Map<string, { root: string; code: string; result: Result<FileAnalysis, Diagnostic> }>;
-
-export const analyzeProject = async (
-  input: string,
-  cache: AnalysisCache = new Map(),
-): Promise<Result<GraphSnapshot>> => {
+export const analyzeProject = async (input: string): Promise<Result<GraphSnapshot>> => {
   const started = performance.now();
   const rootResult = await validateRoot(input);
 
@@ -875,27 +870,14 @@ export const analyzeProject = async (
   const tests = new Set(discovered.filter((absolute) => isTest(relative(absolute))));
   const files = discovered.filter((absolute) => !tests.has(absolute));
 
-  const analyzeCached = (absolute: string, code: string): Result<FileAnalysis, Diagnostic> => {
-    const cached = cache.get(absolute);
-
-    if (cached?.root === root && cached.code === code) return cached.result;
-
-    const result = analyzeSource(root, absolute, code);
-    cache.set(absolute, { root, code, result });
-
-    return result;
-  };
-
   const results = await Promise.all(
     files.map(async (absolute): Promise<Result<FileAnalysis, Diagnostic>> => {
       const code = await readFile(absolute, "utf8").catch((error: unknown) => error);
       return typeof code === "string"
-        ? analyzeCached(absolute, code)
+        ? analyzeSource(root, absolute, code)
         : err({ file: relative(absolute), kind: "parse-error", message: errorMessage(code) });
     }),
   );
-  const current = new Set(files);
-  [...cache.keys()].filter((absolute) => !current.has(absolute)).forEach((absolute) => cache.delete(absolute));
   const analyses = results.flatMap((result) => (result.ok ? [result.value] : []));
   const parseDiagnostics = results.flatMap((result) => (result.ok ? [] : [result.error]));
 
@@ -1017,7 +999,6 @@ export const analyzeProject = async (
     framework: apps.length > 0 ? "sveltekit" : null,
     lanes: structure.lanes,
     groups: structure.groups,
-    groupEdges: structure.groupEdges,
     areas,
     routes: structure.routes,
     modules: modulePaths.map((modulePath) => {
@@ -1032,7 +1013,6 @@ export const analyzeProject = async (
         areaId: areaOf.get(`top:${id}`) ?? null,
         subAreaId: areaOf.get(`sub:${id}`) ?? null,
         depth: required(structure.depth, id, "depth"),
-        position: required(structure.positions, id, "position"),
         externals: [...(externalsByModule.get(id) ?? [])].toSorted(),
         barrel: exportTables.get(modulePath)?.barrel ?? false,
       };
@@ -1076,18 +1056,4 @@ export const fileLogic = async (snapshot: GraphSnapshot, file: string): Promise<
       }),
     ),
   );
-};
-
-export const functionLogic = async (snapshot: GraphSnapshot, id: string): Promise<Result<FunctionLogic>> => {
-  const fn = snapshot.functions.find((candidate) => candidate.id === id);
-
-  if (!fn) return err(`Unknown function: ${id}`);
-
-  const logic = await fileLogic(snapshot, fn.location.file);
-
-  if (!logic.ok) return logic;
-
-  const found = logic.value.get(id);
-
-  return found ? ok(found) : err("This function moved since the last scan. Rescan and try again.");
 };

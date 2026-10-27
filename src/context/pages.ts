@@ -175,7 +175,7 @@ const definitions: readonly (readonly [string, string])[] = [
   ],
   [
     "Parts",
-    "The project is split the way `laqueus list` and the viewer split it: by side, then by area and sub-area (client, shared, server and code sides) or by folder (the other sides). Every part has a page, named like the part: `server/_index.md` for the server side, `server/src-lib.md` for an area. A part with sub-parts has an `_index.md` in a folder of its name.",
+    "The project is split the way `laqueus list` splits it: by side, then by area and sub-area (client, shared, server and code sides) or by folder (the other sides). Every part has a page, named like the part: `server/_index.md` for the server side, `server/src-lib.md` for an area. A part with sub-parts has an `_index.md` in a folder of its name.",
   ],
   [
     "CC",
@@ -1047,7 +1047,7 @@ export const buildPages = (facts: Facts, tree: Tree, options: PageOptions): Resu
               ]
             : []),
           "Start with `_health.md` for how each side looks as a whole, then `_findings.md` for what stands out: complex functions, logic held in inner functions, the files most changes pass through, cycles with the imports that would break them, and layers between areas.",
-          "The project is split into parts the way `laqueus list` and the viewer split it: one folder per side, e.g. `server/_index.md`, and in it one page per area, sub-area or folder, e.g. `server/src-lib.md`. A part page describes the part, what it depends on and what uses it, then each of its files.",
+          "The project is split into parts the way `laqueus list` splits it: one folder per side, e.g. `server/_index.md`, and in it one page per area, sub-area or folder, e.g. `server/src-lib.md`. A part page describes the part, what it depends on and what uses it, then each of its files.",
           "`_files.md` lists every source file with the page that describes it, e.g. `grep 'src/lib/x.ts' _files.md`.",
           "The first line of every page is a one-line summary. Read first lines to scan a level, e.g. `head -qn1 server/*.md`.",
           'Facts are written as `- Label: value` lines, so they can be searched, e.g. `grep -rn "Cycle: #<n>" .` for the files of one cycle.',

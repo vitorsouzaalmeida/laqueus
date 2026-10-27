@@ -64,33 +64,9 @@ describe("SvelteKit structure", () => {
     });
   });
 
-  it("lays lanes out left to right and gives every file its own position", async () => {
+  it("groups files into non-empty folders", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
-    const xOf = (side: Side) =>
-      Math.max(
-        ...snapshot.modules.filter((module) => module.placement.side === side).map((module) => module.position.x),
-      );
-    const minXOf = (side: Side) =>
-      Math.min(
-        ...snapshot.modules.filter((module) => module.placement.side === side).map((module) => module.position.x),
-      );
 
-    expect(xOf("client")).toBeLessThan(minXOf("shared"));
-    expect(xOf("shared")).toBeLessThan(minXOf("server"));
-
-    const positions = new Set(snapshot.modules.map((module) => `${module.position.x},${module.position.y}`));
-
-    expect(positions.size).toBe(snapshot.modules.length);
-  });
-
-  it("aggregates file imports into folder edges", async () => {
-    const snapshot = await scan(fixture("sveltekit-sides"));
-    const groupOf = new Map(snapshot.modules.map((module) => [module.id, module.groupId]));
-    const crossGroup = snapshot.dependencyEdges.filter(
-      (edge) => groupOf.get(edge.from) !== groupOf.get(edge.to),
-    ).length;
-
-    expect(snapshot.groupEdges.reduce((sum, edge) => sum + edge.count, 0)).toBe(crossGroup);
     expect(snapshot.groups.every((group) => group.moduleIds.length > 0)).toBe(true);
   });
 

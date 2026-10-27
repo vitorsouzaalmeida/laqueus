@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { type AnalysisCache, analyzeProject } from "../analyze";
+import { analyzeProject } from "../analyze";
 import { type GraphSnapshot, type Result, err, errorMessage, ok } from "../model";
 
 export type ParseArgsConfig = NonNullable<Parameters<typeof parseArgs>[0]>;
@@ -26,13 +26,9 @@ export const summary = (snapshot: GraphSnapshot) => {
   ].join(", ");
 };
 
-export const scan = async (
-  root: string,
-  log: (line: string) => void,
-  cache: AnalysisCache = new Map(),
-): Promise<Result<GraphSnapshot>> => {
+export const scan = async (root: string, log: (line: string) => void): Promise<Result<GraphSnapshot>> => {
   log(`Scanning ${root} ...`);
-  const result = await analyzeProject(root, cache);
+  const result = await analyzeProject(root);
 
   if (result.ok) log(`Scanned in ${result.value.durationMs} ms: ${summary(result.value)}`);
 

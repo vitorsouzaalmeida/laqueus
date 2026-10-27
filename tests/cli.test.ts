@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { main } from "../src/cli";
 import { type Io, outputFor, parseExportArgs } from "../src/commands/export";
 import { parseListArgs } from "../src/commands/list";
-import { parseServeArgs } from "../src/commands/serve";
 import { markerFile } from "../src/context/write";
 import { fixture } from "./helpers";
 
@@ -23,12 +22,15 @@ const fakeIo = (cwd: string) => {
 };
 
 describe("cli arguments", () => {
-  it("parses serve options as before", () => {
-    expect(parseServeArgs(["app", "--no-open", "--port", "0"], "/work")).toEqual({
-      ok: true,
-      value: { root: "/work/app", open: false, port: 0, help: false },
-    });
-    expect(parseServeArgs(["--port", "99999"], "/work").ok).toBe(false);
+  it("prints the usage without a command and refuses an unknown one", async () => {
+    const help = fakeIo("/work");
+    const unknown = fakeIo("/work");
+
+    await expect(main([], "/work", help.io)).resolves.toBe(0);
+    expect(help.stdout()).toContain("Usage: laqueus list");
+    expect(help.stdout()).toContain("Usage: laqueus export");
+    await expect(main(["serve"], "/work", unknown.io)).resolves.toBe(1);
+    expect(unknown.logs[0]).toContain("Unknown command: serve");
   });
 
   it("takes the part as its argument and the project from -C", () => {
@@ -69,9 +71,7 @@ describe("laqueus export", () => {
     const { io, logs } = fakeIo(directory);
     const target = path.join(directory, "ctx");
 
-    await expect(
-      main(["export", "-C", fixture("sveltekit-sides"), "-o", target], directory, undefined, io),
-    ).resolves.toBe(0);
+    await expect(main(["export", "-C", fixture("sveltekit-sides"), "-o", target], directory, io)).resolves.toBe(0);
 
     const entries = await readdir(target);
     expect(entries).toEqual(
@@ -88,12 +88,12 @@ describe("laqueus export", () => {
     await cp(fixture("topology"), project, { recursive: true });
     const { io } = fakeIo(directory);
 
-    await expect(main(["export", "-C", project], directory, undefined, io)).resolves.toBe(0);
+    await expect(main(["export", "-C", project], directory, io)).resolves.toBe(0);
     expect(await readFile(path.join(project, ".laqueus/_files.md"), "utf8")).toContain("`src/lone.ts`");
 
     await rm(path.join(project, "src/lone.ts"));
 
-    await expect(main(["export", "-C", project], directory, undefined, io)).resolves.toBe(0);
+    await expect(main(["export", "-C", project], directory, io)).resolves.toBe(0);
     expect(await readFile(path.join(project, ".laqueus/_files.md"), "utf8")).not.toContain("`src/lone.ts`");
   });
 
@@ -103,7 +103,7 @@ describe("laqueus export", () => {
     await writeFile(path.join(target, "keep.md"), "mine\n");
     const { io, logs } = fakeIo(directory);
 
-    await expect(main(["export", "-C", fixture("topology"), "-o", target], directory, undefined, io)).resolves.toBe(1);
+    await expect(main(["export", "-C", fixture("topology"), "-o", target], directory, io)).resolves.toBe(1);
     expect(await readdir(target)).toEqual(["keep.md"]);
     expect(logs.at(-1)).toContain("was not written by laqueus export");
   });
@@ -126,19 +126,17 @@ describe("laqueus export", () => {
       return readFile(path.join(target, page), "utf8");
     };
 
-    await expect(main(["export", "-C", project, "-o", target], directory, undefined, io)).resolves.toBe(0);
+    await expect(main(["export", "-C", project, "-o", target], directory, io)).resolves.toBe(0);
     expect(await partPage()).toContain("- Decisions: 11\n  - line 2 (+1, decision)");
 
-    await expect(main(["export", "-C", project, "-o", target, "--no-logic"], directory, undefined, io)).resolves.toBe(
-      0,
-    );
+    await expect(main(["export", "-C", project, "-o", target, "--no-logic"], directory, io)).resolves.toBe(0);
     expect(await partPage()).toContain("- Decisions: 11\n- Ways out: not included");
   });
 
   it("prints its usage", async () => {
     const { io, stdout } = fakeIo(directory);
 
-    await expect(main(["export", "--help"], directory, undefined, io)).resolves.toBe(0);
+    await expect(main(["export", "--help"], directory, io)).resolves.toBe(0);
     expect(stdout()).toContain("Usage: laqueus export");
   });
 
@@ -147,7 +145,7 @@ describe("laqueus export", () => {
     await cp(fixture("sveltekit-sides"), project, { recursive: true });
     const { io } = fakeIo(directory);
 
-    await expect(main(["export", "server", "-C", project], directory, undefined, io)).resolves.toBe(0);
+    await expect(main(["export", "server", "-C", project], directory, io)).resolves.toBe(0);
 
     const target = path.join(project, ".laqueus-server");
     const start = await readFile(path.join(target, "_index.md"), "utf8");
@@ -160,7 +158,7 @@ describe("laqueus export", () => {
   it("refuses an unknown part before scanning logic", async () => {
     const { io, logs } = fakeIo(directory);
 
-    await expect(main(["export", "nope", "-C", fixture("topology")], directory, undefined, io)).resolves.toBe(1);
+    await expect(main(["export", "nope", "-C", fixture("topology")], directory, io)).resolves.toBe(1);
     expect(logs.at(-1)).toContain('No part "nope"');
     expect(logs.at(-1)).toContain("laqueus list");
   });
@@ -168,12 +166,12 @@ describe("laqueus export", () => {
 
 const listed = async (args: readonly string[]) => {
   const { io, stdout, logs } = fakeIo(process.cwd());
-  const code = await main(["list", ...args, "-C", fixture("sveltekit-sides")], process.cwd(), undefined, io);
+  const code = await main(["list", ...args, "-C", fixture("sveltekit-sides")], process.cwd(), io);
   return { code, stdout: stdout(), logs };
 };
 
 describe("laqueus list", () => {
-  it("starts with the sides, the viewer's hidden ones apart", async () => {
+  it("starts with the sides, the hidden ones apart", async () => {
     const { code, stdout } = await listed([]);
     const result = JSON.parse(stdout);
 
