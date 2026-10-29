@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { analyzeCode, fixture, scan } from "./helpers";
-import { createFacts } from "../src/facts";
-import { fewestBackLinks } from "../src/layers";
-import { cycleGroups, smallestCuts, visibility } from "../src/metrics";
+import { createFacts } from "../src/report/facts";
+import { fewestBackLinks } from "../src/graph/layers";
+import { cycleGroups, smallestCuts } from "../src/graph/cycles";
+import { visibility } from "../src/graph/visibility";
 import type { DependencyEdge } from "../src/model";
 
 const edge = (from: string, to: string, typeOnly = false): DependencyEdge => ({
@@ -72,7 +73,7 @@ describe("smallest cycle cuts", () => {
   });
 
   it("attaches the cuts and the imported names to each cycle", async () => {
-    const facts = createFacts(await scan(fixture("topology")), null);
+    const facts = createFacts(await scan(fixture("topology")));
 
     expect(facts.cycles[0]?.cuts).toEqual([
       [{ from: "src/a.ts", to: "src/b.ts", lines: [1], names: ["b"], via: [], typeOnly: false }],
@@ -150,7 +151,7 @@ describe("visibility", () => {
 describe("area coupling", () => {
   it("finds two-way dependencies and the layer order of a side's areas", async () => {
     const snapshot = await scan(fixture("coupling"));
-    const facts = createFacts(snapshot, null);
+    const facts = createFacts(snapshot);
     const label = (id: string) => facts.areaLabelOf(id);
 
     expect(facts.cycles).toEqual([]);
@@ -169,7 +170,7 @@ describe("area coupling", () => {
   });
 
   it("measures cohesion and instability within the side", async () => {
-    const facts = createFacts(await scan(fixture("coupling")), null);
+    const facts = createFacts(await scan(fixture("coupling")));
     const byLabel = new Map([...facts.areaFacts.values()].map((area) => [area.label, area]));
 
     expect(byLabel.get("src/x")).toMatchObject({ cohesion: 0.5, instability: 0.33, incoming: 2, outgoing: 1 });

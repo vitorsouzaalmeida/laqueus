@@ -1,6 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { analyzeParsedFile, analyzeProject, parseSource } from "../src/analyze";
+import { analyzeParsedFile } from "../src/language/file";
+import { parseSource } from "../src/language/parse";
+import { analyzeProject } from "../src/scan/project";
 import type { GraphSnapshot } from "../src/model";
 
 export const fixture = (name: string) => path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", name);
@@ -22,6 +24,4 @@ export const analyzeCode = (fileName: string, code: string) => {
 };
 
 export const edgePairs = (snapshot: GraphSnapshot) =>
-  snapshot.dependencyEdges
-    .map((edge) => `${edge.from.replace("module:", "")} -> ${edge.to.replace("module:", "")}`)
-    .toSorted();
+  snapshot.dependencyEdges.map((edge) => `${edge.from.replace("", "")} -> ${edge.to.replace("", "")}`).toSorted();

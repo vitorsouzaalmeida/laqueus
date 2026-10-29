@@ -2,15 +2,15 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildPages } from "../src/context/pages";
-import { createFacts } from "../src/facts";
+import { buildPages } from "../src/report/pages/index";
+import { createFacts } from "../src/report/facts";
 import type { GraphSnapshot } from "../src/model";
-import { buildTree, partNames, traySides } from "../src/tree";
+import { buildTree, partNames } from "../src/scan/parts";
 import { fixture, scan } from "./helpers";
 
 const pagesOf = (snapshot: GraphSnapshot, exportedAt = "2026-10-20T12:00:00.000Z", scope?: string) => {
-  const tree = buildTree(snapshot, { grouping: "areas", tray: new Set(traySides) });
-  const result = buildPages(createFacts(snapshot, null), tree, { exportedAt, ...(scope ? { scope } : {}) });
+  const tree = buildTree(snapshot);
+  const result = buildPages(createFacts(snapshot), tree, { exportedAt, logic: false, ...(scope ? { scope } : {}) });
 
   if (!result.ok) throw new Error(result.error);
 
@@ -208,8 +208,10 @@ export const pick = (n: number) => {
 
   it("refuses an unknown scope", async () => {
     const snapshot = await scan(fixture("topology"));
-    const tree = buildTree(snapshot, { grouping: "areas", tray: new Set(traySides) });
+    const tree = buildTree(snapshot);
 
-    expect(buildPages(createFacts(snapshot, null), tree, { exportedAt: "x", scope: "side:nowhere" }).ok).toBe(false);
+    expect(buildPages(createFacts(snapshot), tree, { exportedAt: "x", logic: false, scope: "side:nowhere" }).ok).toBe(
+      false,
+    );
   });
 });

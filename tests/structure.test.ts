@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphSnapshot, Side } from "../src/model";
-import { groupDirectories } from "../src/structure";
+import { groupDirectories } from "../src/scan/groups";
 import { fixture, scan } from "./helpers";
 
 const sides = (snapshot: GraphSnapshot) =>
@@ -40,7 +40,7 @@ describe("SvelteKit structure", () => {
       unreached: ["src/lib/orphan.ts"],
       tooling: ["scripts/seed.ts", "svelte.config.js"],
     });
-    expect(snapshot.lanes.map((lane) => lane.side)).toEqual(["client", "shared", "server", "unreached", "tooling"]);
+    expect(snapshot.sides.map((info) => info.side)).toEqual(["client", "shared", "server", "unreached", "tooling"]);
   });
 
   it("marks framework entry points and explains reachability with an import chain", async () => {
@@ -50,16 +50,12 @@ describe("SvelteKit structure", () => {
     expect(placementOf(snapshot, "src/lib/format.ts")).toMatchObject({
       entry: null,
       chains: {
-        client: ["module:src/routes/+page.svelte", "module:src/lib/format.ts"],
-        server: ["module:src/routes/+page.server.ts", "module:src/lib/format.ts"],
+        client: ["src/routes/+page.svelte", "src/lib/format.ts"],
+        server: ["src/routes/+page.server.ts", "src/lib/format.ts"],
       },
     });
     expect(placementOf(snapshot, "src/lib/client-only.ts")?.chains).toEqual({
-      client: [
-        "module:src/routes/+layout.svelte",
-        "module:src/lib/components/Nav.svelte",
-        "module:src/lib/client-only.ts",
-      ],
+      client: ["src/routes/+layout.svelte", "src/lib/components/Nav.svelte", "src/lib/client-only.ts"],
       server: undefined,
     });
   });

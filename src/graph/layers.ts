@@ -1,3 +1,5 @@
+import { byText } from "../model";
+
 export type Link = { from: string; to: string; imports: number; names: number };
 
 export type Layering = { order: string[]; back: Link[]; approximate: boolean };
@@ -5,8 +7,6 @@ export type Layering = { order: string[]; back: Link[]; approximate: boolean };
 export const exactLimit = 20;
 
 type Arc = readonly [node: number, weight: number];
-
-const byText = (a: string, b: string) => a.localeCompare(b);
 
 const merge = (links: readonly Link[]): Link[] => [
   ...links

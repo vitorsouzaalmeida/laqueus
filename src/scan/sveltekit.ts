@@ -1,18 +1,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import type { LibAlias } from "../language/resolve";
+import { breadthFirst, chainTo } from "../graph/reach";
 import {
   type DependencyEdge,
   type Diagnostic,
-  type Lane,
-  type ModuleGroup,
   type Placement,
   type Route,
   type RouteFile,
   type RouteRole,
   type Side,
-  moduleId,
-  modulePath,
-} from "./model";
+  directoryOf,
+} from "../model";
+import { configPattern } from "./files";
 
 type EntryRule = { pattern: RegExp; side: "client" | "server"; label: string };
 
@@ -35,58 +35,15 @@ const sveltekitEntries: readonly EntryRule[] = [
   { pattern: /^src\/params\/[^/]+\.[jt]s$/, side: "client", label: "SvelteKit param matcher" },
 ];
 
-const testPatterns = [
-  /\.(test|spec)\.[cm]?[jt]sx?$/,
-  /\.stories\.([cm]?[jt]sx?|svelte)$/,
-  /(^|\/)(__tests__|__mocks__|__fixtures__|e2e|tests?)\//,
-];
-const configPattern = /(^|\/)[^/]+\.config\.[cm]?[jt]s$/;
-
-const laneInfo: Readonly<Record<Side, { label: string; description: string }>> = {
-  client: {
-    label: "UI / client bundle",
-    description:
-      "Reached only from components, universal loads and client hooks. SvelteKit ships this code to the browser (it also runs during server-side rendering).",
-  },
-  shared: {
-    label: "Shared",
-    description: "Reached from both the client bundle and server-only entry points.",
-  },
-  server: {
-    label: "Server only",
-    description:
-      "Reached only from server entry points (+page.server, +layout.server, +server, hooks.server) or marked server-only by SvelteKit ($lib/server, *.server.*). Never sent to the browser.",
-  },
-  code: {
-    label: "Code",
-    description: "Source files outside a SvelteKit app and not reached from one.",
-  },
-  unreached: {
-    label: "Not reached",
-    description:
-      "Inside a SvelteKit app, but no entry point imports it at runtime. It may be unused, used only by tests or for types, or loaded in a way static imports do not show.",
-  },
-  tooling: {
-    label: "Tooling & config",
-    description: "Config files and SvelteKit app files outside src/ (scripts, build and test setup).",
-  },
-};
-
-const laneOrder: readonly Side[] = ["client", "shared", "server", "code", "unreached", "tooling"];
-
-const minimumGroupSize = 4;
-
 export type SvelteKitApp = { root: string };
 
-export type Structure = {
-  routes: Route[];
-  warnings: Diagnostic[];
-  placements: Map<string, Placement>;
-  groupOf: Map<string, string>;
-  depth: Map<string, number>;
-  lanes: Lane[];
-  groups: ModuleGroup[];
+export const libAlias: LibAlias = {
+  names: ["$lib", "#lib"],
+  folder: ["src", "lib"],
+  markers: ["svelte.config.js", "svelte.config.ts", "svelte.config.mjs", "package.json"],
 };
+
+export const frameworkOf = (apps: readonly SvelteKitApp[]) => (apps.length > 0 ? "sveltekit" : null);
 
 const hasKitMarker = (directory: string) => {
   if (["js", "ts", "mjs", "cjs"].some((ext) => existsSync(path.join(directory, `svelte.config.${ext}`)))) {
@@ -105,7 +62,7 @@ const hasKitMarker = (directory: string) => {
   }
 };
 
-export const findSvelteKitApps = (root: string, paths: readonly string[]): SvelteKitApp[] =>
+export const findApps = (root: string, paths: readonly string[]): SvelteKitApp[] =>
   [
     ...new Set(
       paths.flatMap((file) => {
@@ -141,8 +98,6 @@ const isServerOnlyByName = (apps: readonly SvelteKitApp[], file: string) => {
   );
 };
 
-export const isTest = (file: string) => testPatterns.some((pattern) => pattern.test(file));
-
 const isTooling = (apps: readonly SvelteKitApp[], file: string) => {
   if (configPattern.test(file)) return true;
 
@@ -150,59 +105,6 @@ const isTooling = (apps: readonly SvelteKitApp[], file: string) => {
   const relative = app && relativeTo(app.root, file);
 
   return relative !== undefined && !relative.startsWith("src/");
-};
-
-type Reach = Map<string, string | null>;
-
-const breadthFirst = (starts: readonly string[], next: (node: string) => readonly string[]): Reach => {
-  const visit = (frontier: readonly string[], seen: Reach): Reach => {
-    if (frontier.length === 0) return seen;
-
-    const discovered = frontier.flatMap((node) =>
-      next(node)
-        .filter((target) => !seen.has(target))
-        .map((target) => [target, node] as const),
-    );
-    const fresh = [...new Map(discovered.toReversed())];
-
-    fresh.forEach(([target, parent]) => seen.set(target, parent));
-
-    return visit(
-      fresh.map(([target]) => target),
-      seen,
-    );
-  };
-  return visit(starts, new Map(starts.map((start) => [start, null])));
-};
-
-const chainTo = (reach: Reach, file: string): string[] => {
-  const parent = reach.get(file);
-  return parent === null || parent === undefined ? [file] : [...chainTo(reach, parent), file];
-};
-
-const depthFrom = (reach: Reach, file: string): number => chainTo(reach, file).length - 1;
-
-const directoryOf = (file: string) => {
-  const slash = file.lastIndexOf("/");
-  return slash === -1 ? "." : file.slice(0, slash);
-};
-
-const parentDirectory = (directory: string) => (directory.includes("/") ? directoryOf(directory) : ".");
-
-const directoryDepth = (directory: string) => (directory === "." ? 0 : directory.split("/").length);
-
-export const groupDirectories = (files: readonly string[]): Map<string, string> => {
-  const initial = new Map(files.map((file) => [file, directoryOf(file)]));
-  const directories = [...new Set(initial.values())].toSorted(
-    (a, b) => directoryDepth(b) - directoryDepth(a) || a.localeCompare(b),
-  );
-
-  return directories.reduce((assignment, directory) => {
-    const members = [...assignment].filter(([, assigned]) => assigned === directory);
-    return members.length >= minimumGroupSize || directory === "."
-      ? assignment
-      : members.reduce((next, [file]) => next.set(file, parentDirectory(directory)), assignment);
-  }, initial);
 };
 
 const routeRoles: readonly { pattern: RegExp; role: RouteRole; side: "client" | "server" }[] = [
@@ -240,7 +142,7 @@ export const findRoutes = (paths: readonly string[], apps: readonly SvelteKitApp
       const directory = directoryOf(file).slice(routesRoot.length + 1);
 
       return rule
-        ? [{ directory, file: { role: rule.role, side: rule.side, moduleId: moduleId(file) } satisfies RouteFile }]
+        ? [{ directory, file: { role: rule.role, side: rule.side, moduleId: file } satisfies RouteFile }]
         : [];
     });
     const byDirectory = files.reduce(
@@ -262,35 +164,19 @@ export const findRoutes = (paths: readonly string[], apps: readonly SvelteKitApp
       }));
   });
 
-const explain = (side: Side, entry: EntryRule | undefined, serverOnlyName: boolean, kit: boolean) => {
-  if (entry) return `${entry.label}: an entry point that SvelteKit loads itself.`;
+export type Placed = { placements: Map<string, Placement>; warnings: Diagnostic[] };
 
-  if (side === "server" && serverOnlyName) {
-    return "Server-only by SvelteKit's rules ($lib/server or a .server file name).";
-  }
-
-  if (side === "tooling" || side === "unreached" || side === "code" || !kit) {
-    return laneInfo[side].description;
-  }
-
-  return side === "shared"
-    ? "Imported, directly or indirectly, by both client-bundle and server-only entry points."
-    : side === "server"
-      ? "Imported only by code that starts at server-only entry points."
-      : "Imported only by code that starts at components, universal loads or client hooks.";
-};
-
-export const buildStructure = (
+export const placeFiles = (
   paths: readonly string[],
   edges: readonly DependencyEdge[],
   apps: readonly SvelteKitApp[],
-): Structure => {
+): Placed => {
   const running = edges.filter((edge) => !edge.typeOnly);
   const outgoing = running.reduce(
-    (map, edge) => map.set(modulePath(edge.from), [...(map.get(modulePath(edge.from)) ?? []), modulePath(edge.to)]),
+    (map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]),
     new Map<string, string[]>(),
   );
-  const importers = new Set(edges.filter((edge) => edge.from !== edge.to).map((edge) => modulePath(edge.to)));
+  const importers = new Set(edges.filter((edge) => edge.from !== edge.to).map((edge) => edge.to));
   const next = (file: string) => outgoing.get(file) ?? [];
 
   const tooling = new Set(paths.filter((file) => isTooling(apps, file)));
@@ -328,94 +214,40 @@ export const buildStructure = (
     return appOf(apps, file) ? "unreached" : "code";
   };
 
-  const sides = new Map(paths.map((file) => [file, sideOf(file)]));
   const warnings = running.flatMap((edge): Diagnostic[] => {
-    const from = modulePath(edge.from);
-    const to = modulePath(edge.to);
-    const clientSide = fromClient.has(from) && !isServerOnlyByName(apps, from) && !fromServer.has(from);
+    const clientSide = fromClient.has(edge.from) && !isServerOnlyByName(apps, edge.from) && !fromServer.has(edge.from);
 
-    return clientSide && isServerOnlyByName(apps, to)
+    return clientSide && isServerOnlyByName(apps, edge.to)
       ? [
           {
-            file: from,
+            file: edge.from,
             line: edge.occurrences[0]?.line,
             kind: "server-only-import",
-            message: `Client-side code imports the server-only module ${to}. SvelteKit refuses to build this.`,
+            message: `Client-side code imports the server-only module ${edge.to}. SvelteKit refuses to build this.`,
           },
         ]
       : [];
   });
-  const roots = paths.filter((file) => entries.has(file) || !importers.has(file));
-  const reachFromRoots = breadthFirst(roots, next);
-  const depth = new Map(paths.map((file) => [file, reachFromRoots.has(file) ? depthFrom(reachFromRoots, file) : 0]));
 
   const placements = new Map(
-    [...sides].map(([file, side]): [string, Placement] => {
+    paths.map((file): [string, Placement] => {
+      const side = sideOf(file);
       const rule = entries.get(file);
       const isRoot = side === "code" || side === "tooling";
 
       return [
-        moduleId(file),
+        file,
         {
           side,
           entry: rule?.label ?? (isRoot && !importers.has(file) ? "Root file: no other file imports it" : null),
-          reason: explain(side, rule, isServerOnlyByName(apps, file), appOf(apps, file) !== undefined),
           chains: {
-            client: fromClient.has(file) ? chainTo(fromClient, file).map(moduleId) : undefined,
-            server: fromServer.has(file) ? chainTo(fromServer, file).map(moduleId) : undefined,
+            client: fromClient.has(file) ? chainTo(fromClient, file) : undefined,
+            server: fromServer.has(file) ? chainTo(fromServer, file) : undefined,
           },
         },
       ];
     }),
   );
 
-  const lanesUsed = laneOrder.filter((side) => paths.some((file) => sides.get(file) === side));
-  const groupsBySide = new Map(
-    lanesUsed.map((side) => {
-      const files = paths.filter((file) => sides.get(file) === side);
-      const assignment = groupDirectories(files);
-      const directories = [...new Set(assignment.values())];
-
-      return [
-        side,
-        directories
-          .map((directory) => ({
-            id: `group:${side}:${directory}`,
-            directory,
-            files: files.filter((file) => assignment.get(file) === directory),
-          }))
-          .toSorted(
-            (a, b) =>
-              Math.min(...a.files.map((file) => depth.get(file) ?? 0)) -
-                Math.min(...b.files.map((file) => depth.get(file) ?? 0)) || a.directory.localeCompare(b.directory),
-          ),
-      ] as const;
-    }),
-  );
-
-  const groupOf = new Map(
-    [...groupsBySide.values()]
-      .flat()
-      .flatMap((group) => group.files.map((file) => [moduleId(file), group.id] as const)),
-  );
-  return {
-    routes: findRoutes(paths, apps),
-    warnings,
-    placements,
-    groupOf,
-    depth: new Map([...depth].map(([file, value]) => [moduleId(file), value])),
-    lanes: lanesUsed.map((side) => ({
-      side,
-      label: laneInfo[side].label,
-      description: laneInfo[side].description,
-    })),
-    groups: [...groupsBySide].flatMap(([side, groups]) =>
-      groups.map((group) => ({
-        id: group.id,
-        side,
-        directory: group.directory,
-        moduleIds: group.files.map(moduleId),
-      })),
-    ),
-  };
+  return { placements, warnings };
 };

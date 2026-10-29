@@ -1,8 +1,8 @@
 import type { Reference, ScopeManager, Variable } from "@typescript-eslint/scope-manager";
 import type { TSESTree } from "@typescript-eslint/types";
 import { type FunctionLike, type VisitorKeys, isFunction, locationOf, unwrapExpression } from "./ast";
-import { ownNodes } from "./metrics";
-import type { CallEdge } from "./model";
+import type { CallEdge } from "../model";
+import { ownNodes } from "./complexity";
 
 type ClassNode = TSESTree.ClassDeclaration | TSESTree.ClassExpression;
 type ThisContext = { cls: ClassNode; isStatic: boolean };

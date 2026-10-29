@@ -3,9 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { main } from "../src/cli";
-import { type Io, outputFor, parseExportArgs } from "../src/commands/export";
+import type { Io } from "../src/commands/common";
+import { outputFor, parseExportArgs } from "../src/commands/export";
 import { parseListArgs } from "../src/commands/list";
-import { markerFile } from "../src/context/write";
+import { markerFile } from "../src/report/write";
 import { fixture } from "./helpers";
 
 const fakeIo = (cwd: string) => {
@@ -127,7 +128,7 @@ describe("laqueus export", () => {
     };
 
     await expect(main(["export", "-C", project, "-o", target], directory, io)).resolves.toBe(0);
-    expect(await partPage()).toContain("- Decisions: 11\n  - line 2 (+1, decision)");
+    expect(await partPage()).toContain("- Decisions: 11\n  - line 2 (+1, if)");
 
     await expect(main(["export", "-C", project, "-o", target, "--no-logic"], directory, io)).resolves.toBe(0);
     expect(await partPage()).toContain("- Decisions: 11\n- Ways out: not included");

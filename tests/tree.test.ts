@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildTree, findPart, partNames, traySides } from "../src/tree";
+import { buildTree, findPart, partNames } from "../src/scan/parts";
 import { fixture, scan } from "./helpers";
 
 const setup = async () => {
   const snapshot = await scan(fixture("sveltekit-sides"));
-  const tree = buildTree(snapshot, { grouping: "areas", tray: new Set(traySides) });
+  const tree = buildTree(snapshot);
   return { tree, names: partNames(tree) };
 };
 

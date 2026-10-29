@@ -1,7 +1,7 @@
 import type { TSESTree } from "@typescript-eslint/types";
 import { describe, expect, it } from "vitest";
-import { parseSource } from "../src/analyze";
-import { children, descendants, indexTree, isFunction } from "../src/ast";
+import { parseSource } from "../src/language/parse";
+import { children, descendants, indexTree, isFunction } from "../src/language/ast";
 
 const parse = (code: string) => {
   const parsed = parseSource("/virtual", "/virtual/a.ts", code);

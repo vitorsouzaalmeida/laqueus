@@ -1,6 +1,13 @@
 import { parseArgs } from "node:util";
-import { analyzeProject } from "../analyze";
 import { type GraphSnapshot, type Result, err, errorMessage, ok } from "../model";
+import { analyzeProject } from "../scan/project";
+
+export type Io = {
+  cwd: string;
+  out: (text: string) => void;
+  log: (line: string) => void;
+  now: () => Date;
+};
 
 export type ParseArgsConfig = NonNullable<Parameters<typeof parseArgs>[0]>;
 

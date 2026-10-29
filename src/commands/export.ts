@@ -1,18 +1,10 @@
 import path from "node:path";
-import { fileLogic } from "../analyze";
-import { buildPages } from "../context/pages";
-import { writeContext } from "../context/write";
-import { createFacts } from "../facts";
-import { type FunctionLogic, type GraphSnapshot, type Result, err, ok } from "../model";
-import { buildTree, findPart, partNames, traySides } from "../tree";
-import { parse, scan } from "./common";
-
-export type Io = {
-  cwd: string;
-  out: (text: string) => void;
-  log: (line: string) => void;
-  now: () => Date;
-};
+import { type Result, err, ok } from "../model";
+import { createFacts } from "../report/facts";
+import { buildPages } from "../report/pages/index";
+import { writeContext } from "../report/write";
+import { buildTree, findPart, partNames } from "../scan/parts";
+import { type Io, parse, scan } from "./common";
 
 export type ExportOptions = { root: string; part: string; output: string | null; logic: boolean; help: boolean };
 
@@ -57,13 +49,6 @@ export const parseExportArgs = (argv: readonly string[], cwd: string): Result<Ex
   });
 };
 
-const logicFor = async (data: GraphSnapshot, moduleIds: ReadonlySet<string>) => {
-  const files = [...new Set(data.functions.filter((fn) => moduleIds.has(fn.moduleId)).map((fn) => fn.location.file))];
-  const results = await Promise.all(files.map((file) => fileLogic(data, file)));
-
-  return new Map<string, FunctionLogic>(results.flatMap((result) => (result.ok ? [...result.value] : [])));
-};
-
 export const runExport = async (argv: readonly string[], io: Io): Promise<number> => {
   const options = parseExportArgs(argv, io.cwd);
 
@@ -86,7 +71,7 @@ export const runExport = async (argv: readonly string[], io: Io): Promise<number
 
   const data = scanned.value;
   const { part } = options.value;
-  const tree = buildTree(data, { grouping: "areas", tray: new Set(traySides) });
+  const tree = buildTree(data);
   const scope = part === "" ? ok(tree.root) : findPart(tree, partNames(tree), part);
 
   if (!scope.ok) {
@@ -94,9 +79,9 @@ export const runExport = async (argv: readonly string[], io: Io): Promise<number
     return 1;
   }
 
-  const logic = options.value.logic ? await logicFor(data, new Set(scope.value.moduleIds)) : null;
-  const pages = buildPages(createFacts(data, logic), tree, {
+  const pages = buildPages(createFacts(data), tree, {
     exportedAt: io.now().toISOString(),
+    logic: options.value.logic,
     ...(part === "" ? {} : { scope: scope.value.id }),
   });
 

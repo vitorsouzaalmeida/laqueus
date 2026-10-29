@@ -17,29 +17,10 @@ It measures how complex and how coupled a codebase is, and exports the results a
 - Areas: files grouped by their imports with the [Louvain method](https://en.wikipedia.org/wiki/Louvain_method), and named after the folder most of their files live in. Files used almost everywhere are set aside first, as [Bunch](https://doi.org/10.1109/ICSM.1999.792498) does, so they don't pull every area together.
 - Sides: I follow the imports from the entry points of a SvelteKit app (pages, endpoints, hooks…) to see where each file runs. This also flags client code that imports server-only modules.
 
-## Export
-
-`laqueus export` writes every metric as a directory of small Markdown pages, easy to grep and for an agent to read.
-
-```sh
-laqueus export                  # the whole project, into .laqueus/
-laqueus export --no-logic       # leave out the per-function complexity
-laqueus export -C ../app -o ctx # another project, another directory
-```
-
-To export one part, find it with `list` and drill down:
-
-```sh
-laqueus list                    # client, shared, server…
-laqueus list server             # the areas inside server: server/src-lib, …
-laqueus export server           # only that part, into .laqueus-server/
-```
-
 ## Judgement
 
-Some metrics get a band (low, moderate, high…):
+Some metrics get a band low, moderate, or high:
 
 - Complexity bands: low (1–10), moderate (11–15), high (16+). These come from cyclomatic complexity research going back to McCabe's original paper.
 - Fan-in and fan-out bands come from each project's own numbers. I rank the files within their side: below the 75th percentile is low, 75th–89th is moderate, 90th–94th is high, 95th and above is extreme.
 - Cycle severity is based on how many files are in the cycle: 2 is minor, 3–5 is moderate, 6 or more is severe. Next to it I show how many imports it takes to break it, which is the cost of fixing it.
-- The health page sums up each side with plain numbers and no verdict.

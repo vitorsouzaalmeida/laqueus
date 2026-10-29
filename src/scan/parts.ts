@@ -1,7 +1,4 @@
-import { type Area, type GraphSnapshot, type ModuleNode, type Result, type Route, type Side, err, ok } from "./model";
-
-export type Grouping = "areas" | "folders";
-export type MapOptions = { grouping: Grouping; tray: ReadonlySet<Side> };
+import { type Area, type GraphSnapshot, type ModuleNode, type Result, type Side, err, ok } from "../model";
 
 export type TreeNode = {
   id: string;
@@ -20,17 +17,13 @@ export type Tree = {
   pathOf: Map<string, string[]>;
 };
 
-export const mainSides: readonly Side[] = ["client", "shared", "server", "code"];
-export const traySides: readonly Side[] = ["unreached", "tooling"];
-
 const folderLabel = (directory: string) => (directory === "." ? "(project root)" : directory);
 
-export const buildTree = (data: GraphSnapshot, options: MapOptions): Tree => {
+export const buildTree = (data: GraphSnapshot): Tree => {
   const modules = data.modules;
-  const visibleSides = data.lanes
-    .map((lane) => lane.side)
-    .filter((side) => mainSides.includes(side) || options.tray.has(side));
-  const laneLabel = new Map(data.lanes.map((lane) => [lane.side, lane.label]));
+  const visibleSides = data.sides.map((info) => info.side);
+  const byArea = new Set(data.sides.filter((info) => info.grouping === "areas").map((info) => info.side));
+  const laneLabel = new Map(data.sides.map((info) => [info.side, info.label]));
   const areaById = new Map(data.areas.map((area) => [area.id, area]));
   const nodes = new Map<string, TreeNode>();
   const pathOf = new Map<string, string[]>();
@@ -70,7 +63,7 @@ export const buildTree = (data: GraphSnapshot, options: MapOptions): Tree => {
       area: null,
     });
 
-    const useAreas = options.grouping === "areas" && mainSides.includes(side);
+    const useAreas = byArea.has(side);
     const keyOf = (module: ModuleNode) => (useAreas && module.areaId ? module.areaId : module.groupId);
     const groups = [...new Set(members.map(keyOf))];
 
@@ -125,79 +118,6 @@ export const buildTree = (data: GraphSnapshot, options: MapOptions): Tree => {
 export const ancestry = (tree: Tree, nodeId: string): string[] => {
   const node = tree.nodes.get(nodeId);
   return node?.parent ? [...ancestry(tree, node.parent), nodeId] : [nodeId];
-};
-
-export const nodeStats = (modules: readonly ModuleNode[]) => {
-  const scores = modules.flatMap((module) => (module.metrics.maxCC === null ? [] : [module.metrics.maxCC]));
-
-  return {
-    entries: modules.filter((module) => module.placement.entry !== null).length,
-    maxCC: scores.length > 0 ? Math.max(...scores) : null,
-    cyclic: modules.some((module) => module.metrics.cycleGroup !== null),
-  };
-};
-
-export const externalCounts = (modules: readonly ModuleNode[]) =>
-  [
-    ...modules
-      .flatMap((module) => module.externals)
-      .reduce((map, name) => map.set(name, (map.get(name) ?? 0) + 1), new Map<string, number>()),
-  ].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-
-export const breadthFirst = (starts: readonly string[], next: (id: string) => readonly string[]) => {
-  const visit = (
-    frontier: readonly string[],
-    seen: Map<string, { depth: number; origin: string | null }>,
-  ): typeof seen => {
-    if (frontier.length === 0) return seen;
-
-    const discovered = frontier.flatMap((id) =>
-      next(id)
-        .filter((target) => !seen.has(target))
-        .map((target) => {
-          const parent = seen.get(id);
-          const depth = (parent?.depth ?? 0) + 1;
-
-          return [
-            target,
-            {
-              depth,
-              origin: depth === 1 ? target : (parent?.origin ?? null),
-            },
-          ] as const;
-        }),
-    );
-    const fresh = [...new Map(discovered.toReversed())];
-
-    fresh.forEach(([target, info]) => seen.set(target, info));
-
-    return visit(
-      fresh.map(([target]) => target),
-      seen,
-    );
-  };
-  return visit(starts, new Map(starts.map((id) => [id, { depth: 0, origin: null }])));
-};
-
-export const outgoingImports = (data: GraphSnapshot) =>
-  data.dependencyEdges.reduce(
-    (map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]),
-    new Map<string, string[]>(),
-  );
-
-export const routeReach = (
-  data: GraphSnapshot,
-  route: Route,
-  outgoing: ReadonlyMap<string, readonly string[]> = outgoingImports(data),
-): Record<"client" | "server", string[]> => {
-  const reach = (side: "client" | "server") => [
-    ...breadthFirst(
-      route.files.filter((file) => file.side === side).map((file) => file.moduleId),
-      (id) => outgoing.get(id) ?? [],
-    ).keys(),
-  ];
-
-  return { client: reach("client"), server: reach("server") };
 };
 
 export const slug = (text: string) =>

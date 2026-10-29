@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ccBand, cycleSeverity, median, rankScale, role } from "../src/judgement";
+import { ccBand, cycleSeverity, median, rankScale, role } from "../src/report/judgement";
 
 describe("ccBand", () => {
   it.each([

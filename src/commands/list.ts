@@ -1,9 +1,8 @@
 import path from "node:path";
-import { type Facts, byText, createFacts } from "../facts";
-import { type Result, err, ok } from "../model";
-import { type Tree, type TreeNode, ancestry, buildTree, findPart, mainSides, partNames, traySides } from "../tree";
-import { parse, scan } from "./common";
-import type { Io } from "./export";
+import { type Result, byText, err, ok } from "../model";
+import { type Facts, createFacts } from "../report/facts";
+import { type Tree, type TreeNode, ancestry, buildTree, findPart, partNames } from "../scan/parts";
+import { type Io, parse, scan } from "./common";
 
 export type ListOptions = { root: string; part: string; help: boolean };
 
@@ -64,12 +63,11 @@ const filesRows = (facts: Facts, node: TreeNode) =>
     }));
 
 const listPart = (facts: Facts, tree: Tree, names: ReadonlyMap<string, string>, node: TreeNode) => {
+  const byArea = new Set(facts.sides.filter((info) => info.grouping === "areas").map((info) => info.side));
   const name = names.get(node.id) ?? "";
   const pathLabels = ancestry(tree, node.id).flatMap((id) => tree.nodes.get(id)?.label ?? []);
   const children = node.children.flatMap((id) => tree.nodes.get(id) ?? []);
-  const main = children.filter(
-    (child) => node.kind !== "root" || child.side === null || mainSides.includes(child.side),
-  );
+  const main = children.filter((child) => node.kind !== "root" || child.side === null || byArea.has(child.side));
   const hidden = children.filter((child) => !main.includes(child));
 
   return children.length === 0
@@ -112,7 +110,7 @@ export const runList = async (argv: readonly string[], io: Io): Promise<number> 
     return 1;
   }
 
-  const tree = buildTree(scanned.value, { grouping: "areas", tray: new Set(traySides) });
+  const tree = buildTree(scanned.value);
   const names = partNames(tree);
   const node = options.value.part === "" ? ok(tree.root) : findPart(tree, names, options.value.part);
 
@@ -121,7 +119,7 @@ export const runList = async (argv: readonly string[], io: Io): Promise<number> 
     return 1;
   }
 
-  const result = listPart(createFacts(scanned.value, null), tree, names, node.value);
+  const result = listPart(createFacts(scanned.value), tree, names, node.value);
   io.out(`${JSON.stringify(result, null, 2)}\n`);
   io.log(
     "files" in result

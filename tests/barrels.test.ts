@@ -3,11 +3,11 @@ import { analyzeCode, fixture, scan } from "./helpers";
 
 const edgesOf = (snapshot: Awaited<ReturnType<typeof scan>>, from: string) =>
   snapshot.dependencyEdges
-    .filter((edge) => edge.from === `module:${from}`)
+    .filter((edge) => edge.from === from)
     .map((edge) => ({
-      to: edge.to.replace("module:", ""),
+      to: edge.to.replace("", ""),
       names: edge.names,
-      via: edge.via.map((id) => id.replace("module:", "")),
+      via: edge.via.map((id) => id.replace("", "")),
     }))
     .toSorted((a, b) => a.to.localeCompare(b.to));
 
