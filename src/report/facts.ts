@@ -1,4 +1,22 @@
-import { modularity } from "./areas";
+import { modularity } from "../graph/areas";
+import { cycleGroups, smallestCuts } from "../graph/cycles";
+import { fewestBackLinks } from "../graph/layers";
+import { breadthFirst } from "../graph/reach";
+import { visibility } from "../graph/visibility";
+import { highFrom } from "../language/complexity";
+import type {
+  CallEdge,
+  Decision,
+  DependencyEdge,
+  DiagnosticKind,
+  FunctionNode,
+  GraphSnapshot,
+  ModuleNode,
+  Route,
+  RouteRole,
+  Side,
+} from "../model";
+import { byText, directoryOf, isStandaloneArea } from "../model";
 import {
   type CcBand,
   type CycleSeverity,
@@ -7,27 +25,10 @@ import {
   type Role,
   ccBand,
   cycleSeverity,
-  highFrom,
   median,
   rankScale,
   role,
 } from "./judgement";
-import { fewestBackLinks } from "./layers";
-import { cycleGroups, smallestCuts, visibility } from "./metrics";
-import type {
-  CallEdge,
-  DependencyEdge,
-  DiagnosticKind,
-  FunctionLogic,
-  FunctionNode,
-  GraphSnapshot,
-  LogicNodeKind,
-  ModuleNode,
-  RouteRole,
-  Side,
-} from "./model";
-import { isStandaloneArea, modulePath } from "./model";
-import { externalCounts, nodeStats, outgoingImports, routeReach } from "./tree";
 
 export type Stats = {
   files: number;
@@ -49,30 +50,14 @@ export type CallRef = { id: string; name: string; file: string; lines: number[] 
 export type Rank = { band: FanBand; percentile: number; population: number } | null;
 
 export type FileFacts = {
-  path: string;
-  barrel: boolean;
-  side: Side;
-  entry: string | null;
-  chains: { client: string[] | null; server: string[] | null };
-  area: string | null;
-  subArea: string | null;
-  fanIn: number;
-  fanOut: number;
   fanInRank: Rank;
   fanOutRank: Rank;
-  visibility: { fanIn: number; fanOut: number; role: Role };
-  functionCount: number;
-  maxCC: number | null;
+  role: Role;
   maxCcBand: CcBand | null;
-  decisions: number;
-  excessCC: number;
   cycle: number | null;
   imports: ImportRef[];
   importedBy: ImportRef[];
-  packages: string[];
 };
-
-export type Decision = { line: number; kind: LogicNodeKind; weight: number; label: string };
 
 export type FunctionFacts = {
   id: string;
@@ -87,7 +72,8 @@ export type FunctionFacts = {
   ccBand: CcBand;
   calls: CallRef[];
   calledBy: CallRef[];
-  logic: { decisions: Decision[]; waysOut: number } | null;
+  decisions: Decision[];
+  waysOut: number;
 };
 
 export type ClassFacts = { id: string; file: string; name: string; line: number; inclusive: number };
@@ -178,8 +164,6 @@ export type Link = { from: string; to: string; imports: number };
 
 export type DiagnosticFacts = { file: string; line: number | null; kind: DiagnosticKind; message: string };
 
-export const byText = (a: string, b: string) => a.localeCompare(b);
-
 const groupBy = <T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> =>
   items.reduce((map, item) => {
     const group = map.get(key(item));
@@ -197,9 +181,9 @@ const lines = (edge: DependencyEdge | CallEdge) => [
 const importRefs = (list: readonly DependencyEdge[], end: "from" | "to"): ImportRef[] =>
   list
     .map((edge) => ({
-      path: modulePath(edge[end]),
+      path: edge[end],
       lines: lines(edge),
-      via: edge.via.map(modulePath),
+      via: edge.via,
       typeOnly: edge.typeOnly,
     }))
     .toSorted((a, b) => byText(a.path, b.path));
@@ -207,11 +191,11 @@ const importRefs = (list: readonly DependencyEdge[], end: "from" | "to"): Import
 const ratio = (part: number, whole: number) => (whole === 0 ? null : Math.round((part / whole) * 100) / 100);
 
 const cycleEdge = (edge: DependencyEdge): CycleEdge => ({
-  from: modulePath(edge.from),
-  to: modulePath(edge.to),
+  from: edge.from,
+  to: edge.to,
   lines: lines(edge),
   names: edge.names,
-  via: edge.via.map(modulePath),
+  via: edge.via,
   typeOnly: edge.typeOnly,
 });
 
@@ -240,24 +224,38 @@ export const bandShares = (scores: readonly number[]): BandShares =>
     { total: 0, low: 0, moderate: 0, high: 0 },
   );
 
-export const areaSides: readonly Side[] = ["client", "shared", "server", "code"];
-
 export const holdsInside = (fn: FunctionFacts) => fn.inclusive >= highFrom && fn.cc < highFrom;
 
 const rankOf = (scale: RankScale, value: number, ranked: boolean): Rank =>
   ranked ? { band: scale.band(value), percentile: scale.rank(value), population: scale.population } : null;
 
-const directoryOf = (path: string) => (path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : ".");
+const externalCounts = (modules: readonly ModuleNode[]) =>
+  [
+    ...modules
+      .flatMap((module) => module.externals)
+      .reduce((map, name) => map.set(name, (map.get(name) ?? 0) + 1), new Map<string, number>()),
+  ].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 
-export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, FunctionLogic> | null) => {
+const routeReach = (route: Route, outgoing: ReadonlyMap<string, readonly string[]>) => {
+  const reach = (side: "client" | "server") => [
+    ...breadthFirst(
+      route.files.filter((file) => file.side === side).map((file) => file.moduleId),
+      (id) => outgoing.get(id) ?? [],
+    ).keys(),
+  ];
+
+  return { client: reach("client"), server: reach("server") };
+};
+
+export const createFacts = (data: GraphSnapshot) => {
   const modules = new Map(data.modules.map((module) => [module.id, module]));
   const functionsById = new Map(data.functions.map((fn) => [fn.id, fn]));
-  const areas = new Map(data.areas.map((area) => [area.id, area]));
   const edges = data.dependencyEdges.filter((edge) => edge.from !== edge.to);
   const importsFrom = groupBy(edges, (edge) => edge.from);
   const importsTo = groupBy(edges, (edge) => edge.to);
   const sideOf = (id: string) => modules.get(id)?.placement.side;
-  const sides = data.lanes.map((lane) => lane.side);
+  const sides = data.sides.map((info) => info.side);
+  const areaSides = data.sides.filter((info) => info.grouping === "areas").map((info) => info.side);
 
   const scales = new Map<Side, SideScales>(
     sides.map((side) => {
@@ -291,15 +289,15 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
   const stats = (moduleIds: readonly string[]): Stats => {
     const members = membersOf(moduleIds);
     const inside = new Set(moduleIds);
-    const summary = nodeStats(members);
+    const scores = members.flatMap((module) => (module.metrics.maxCC === null ? [] : [module.metrics.maxCC]));
     const outward = moduleIds.flatMap((id) => importsFrom.get(id) ?? []);
     const inward = moduleIds.flatMap((id) => importsTo.get(id) ?? []);
 
     return {
       files: members.length,
-      entryPoints: summary.entries,
+      entryPoints: members.filter((module) => module.placement.entry !== null).length,
       functions: members.reduce((sum, module) => sum + module.metrics.functionCount, 0),
-      maxCC: summary.maxCC,
+      maxCC: scores.length > 0 ? Math.max(...scores) : null,
       decisions: members.reduce((sum, module) => sum + module.metrics.decisions, 0),
       excessCC: members.reduce((sum, module) => sum + module.metrics.excessCC, 0),
       filesInCycles: members.filter((module) => module.metrics.cycleGroup !== null).length,
@@ -311,41 +309,18 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
     };
   };
 
-  const areaLabel = (id: string | null) => (id === null ? null : (areas.get(id)?.label ?? null));
-
   const file = (module: ModuleNode): FileFacts => {
     const scale = scaleOf(module.placement.side);
     const { metrics } = module;
 
     return {
-      path: module.path,
-      barrel: module.barrel,
-      side: module.placement.side,
-      entry: module.placement.entry,
-      chains: {
-        client: module.placement.chains.client?.map(modulePath) ?? null,
-        server: module.placement.chains.server?.map(modulePath) ?? null,
-      },
-      area: areaLabel(module.areaId),
-      subArea: areaLabel(module.subAreaId),
-      fanIn: metrics.fanIn,
-      fanOut: metrics.fanOut,
       fanInRank: rankOf(scale.fanIn, metrics.fanIn, !module.barrel && module.placement.entry === null),
       fanOutRank: rankOf(scale.fanOut, metrics.fanOut, !module.barrel),
-      visibility: {
-        fanIn: metrics.visibilityFanIn,
-        fanOut: metrics.visibilityFanOut,
-        role: role(metrics.visibilityFanIn, metrics.visibilityFanOut, scale.medians),
-      },
-      functionCount: metrics.functionCount,
-      maxCC: metrics.maxCC,
+      role: role(metrics.visibilityFanIn, metrics.visibilityFanOut, scale.medians),
       maxCcBand: metrics.maxCC === null ? null : ccBand(metrics.maxCC),
-      decisions: metrics.decisions,
-      excessCC: metrics.excessCC,
       cycle: metrics.cycleGroup === null ? null : metrics.cycleGroup + 1,
       imports: importRefs(importsFrom.get(module.id) ?? [], "to"),
       importedBy: importRefs(importsTo.get(module.id) ?? [], "from"),
-      packages: module.externals,
     };
   };
 
@@ -356,25 +331,6 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
         return fn ? [{ id: fn.id, name: fn.name, file: fn.location.file, lines: lines(edge) }] : [];
       })
       .toSorted((a, b) => byText(a.file, b.file) || byText(a.id, b.id));
-
-  const logicOf = (id: string): FunctionFacts["logic"] => {
-    const found = logic?.get(id);
-
-    return found
-      ? {
-          decisions: found.nodes
-            .filter((node) => node.weight > 0)
-            .toSorted((a, b) => a.lines.start - b.lines.start)
-            .map((node) => ({
-              line: node.lines.start,
-              kind: node.kind,
-              weight: node.weight,
-              label: node.label.split("\n")[0] ?? node.label,
-            })),
-          waysOut: found.nodes.filter((node) => ["return", "throw", "end"].includes(node.kind)).length,
-        }
-      : null;
-  };
 
   const functionFacts = (fn: FunctionNode): FunctionFacts => ({
     id: fn.id,
@@ -389,7 +345,8 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
     ccBand: ccBand(fn.complexity),
     calls: callRefs(callsFrom.get(fn.id) ?? [], "to"),
     calledBy: callRefs(callsTo.get(fn.id) ?? [], "from"),
-    logic: logicOf(fn.id),
+    decisions: fn.decisions,
+    waysOut: fn.waysOut,
   });
 
   const functionsOf = (moduleId: string): FunctionFacts[] =>
@@ -617,7 +574,7 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
       sideEdges,
     );
     const largestCycle = cycles
-      .map((cycle) => cycle.files.filter((path) => inSide.has(`module:${path}`)).length)
+      .map((cycle) => cycle.files.filter((path) => inSide.has(path)).length)
       .reduce((max, size) => Math.max(max, size), 0);
     const areaGroups = new Map(
       members.flatMap((module) => (module.areaId === null ? [] : [[module.id, module.areaId] as const])),
@@ -646,20 +603,23 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
     };
   });
 
-  const outgoing = outgoingImports(data);
+  const outgoing = data.dependencyEdges.reduce(
+    (map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]),
+    new Map<string, string[]>(),
+  );
   const routes: RouteFacts[] = data.routes.map((route) => {
-    const reach = routeReach(data, route, outgoing);
+    const reach = routeReach(route, outgoing);
 
     return {
       id: route.id,
       url: route.url,
       app: route.app,
       directory: route.directory,
-      files: route.files.map((entry) => ({ role: entry.role, side: entry.side, path: modulePath(entry.moduleId) })),
-      layouts: route.layouts.map(modulePath),
+      files: route.files.map((entry) => ({ role: entry.role, side: entry.side, path: entry.moduleId })),
+      layouts: route.layouts,
       reach: {
-        client: reach.client.map(modulePath).toSorted(byText),
-        server: reach.server.map(modulePath).toSorted(byText),
+        client: reach.client.toSorted(byText),
+        server: reach.server.toSorted(byText),
       },
       packages: { client: packages(reach.client), server: packages(reach.server) },
     };
@@ -675,7 +635,24 @@ export const createFacts = (data: GraphSnapshot, logic: ReadonlyMap<string, Func
     .toSorted((a, b) => byText(a.file, b.file) || (a.line ?? 0) - (b.line ?? 0));
 
   return {
-    data,
+    project: {
+      name: data.name,
+      root: data.root,
+      framework: data.framework,
+      scannedAt: data.scannedAt,
+      durationMs: data.durationMs,
+    },
+    totals: {
+      imports: data.dependencyEdges.length,
+      typeOnlyImports: data.dependencyEdges.filter((edge) => edge.typeOnly).length,
+      routes: data.routes.length,
+      warnings: data.diagnostics.length,
+      functions: data.functions.length,
+      calls: data.callEdges.length,
+    },
+    sides: data.sides,
+    areas: data.areas,
+    moduleList: data.modules,
     modules,
     stats,
     file,

@@ -1,4 +1,5 @@
-import { type Area, type DependencyEdge, type Side, modulePath } from "./model";
+import { type Area, type Side, directoryOf } from "../model";
+import type { Edge } from "./cycles";
 
 type WeightedEdge = readonly [number, number, number];
 
@@ -7,11 +8,6 @@ const largestAffineFolder = 200;
 const minimumLabelShare = 0.25;
 export const farOut = 3;
 export const widelyUsedShare = 0.1;
-
-const directoryOf = (path: string) => {
-  const slash = path.lastIndexOf("/");
-  return slash === -1 ? "." : path.slice(0, slash);
-};
 
 /** Reads a slot of a dense array; every index used here comes from the length of that same array. */
 const at = <T>(items: readonly T[], index: number): T => {
@@ -30,7 +26,7 @@ const quantile = (sorted: readonly number[], share: number) => {
   return at(sorted, low) + (rank - low) * (at(sorted, high) - at(sorted, low));
 };
 
-const widelyUsed = (ids: readonly string[], edges: readonly DependencyEdge[]): Set<string> => {
+const widelyUsed = (ids: readonly string[], edges: readonly Edge[]): Set<string> => {
   const inSide = new Set(ids);
   const importers = edges
     .filter((edge) => edge.from !== edge.to && inSide.has(edge.from) && inSide.has(edge.to))
@@ -124,7 +120,7 @@ const aggregate = (communities: readonly number[], edges: readonly WeightedEdge[
 
 const affinityEdges = (ids: readonly string[]): WeightedEdge[] => {
   const byFolder = ids.reduce(
-    (map, id, node) => map.set(directoryOf(modulePath(id)), [...(map.get(directoryOf(modulePath(id))) ?? []), node]),
+    (map, id, node) => map.set(directoryOf(id), [...(map.get(directoryOf(id)) ?? []), node]),
     new Map<string, number[]>(),
   );
   return [...byFolder.values()]
@@ -138,14 +134,14 @@ const affinityEdges = (ids: readonly string[]): WeightedEdge[] => {
 
 const tokensOf = (id: string) =>
   new Set(
-    modulePath(id)
+    id
       .split("/")
       .slice(0, -1)
       .filter((token) => !/^\[.*\]$/.test(token)),
   );
 
 const ancestorsOf = (id: string) => {
-  const segments = modulePath(id).split("/").slice(0, -1);
+  const segments = id.split("/").slice(0, -1);
   return segments.map((_, index) => segments.slice(0, index + 1).join("/"));
 };
 
@@ -196,7 +192,7 @@ const labeller = (groups: readonly (readonly string[])[], allIds: readonly strin
 
     const first = members[0];
 
-    return first ? shortDirectory(directoryOf(modulePath(first))) : "files";
+    return first ? shortDirectory(directoryOf(first)) : "files";
   };
 };
 
@@ -220,7 +216,7 @@ const groupsOf = (assignment: readonly number[]) =>
     new Map<number, number[]>(),
   );
 
-export const detectAreas = (moduleIds: readonly string[], edges: readonly DependencyEdge[], side: Side): Area[] => {
+export const detectAreas = (moduleIds: readonly string[], edges: readonly Edge[], side: Side): Area[] => {
   const all = moduleIds.toSorted();
 
   if (all.length === 0) return [];
@@ -338,7 +334,7 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Depend
   return [...topAreas, ...widelyUsedArea, ...standaloneArea, ...subAreas];
 };
 
-export const modularity = (groupOf: ReadonlyMap<string, string>, edges: readonly DependencyEdge[]): number | null => {
+export const modularity = (groupOf: ReadonlyMap<string, string>, edges: readonly Edge[]): number | null => {
   const links = edges.flatMap((edge) => {
     const from = groupOf.get(edge.from);
     const to = groupOf.get(edge.to);

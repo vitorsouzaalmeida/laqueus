@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { detectAreas } from "../src/areas";
+import { detectAreas } from "../src/graph/areas";
 import type { DependencyEdge } from "../src/model";
 import { fixture, scan } from "./helpers";
 
 const edge = (from: string, to: string): DependencyEdge => ({
   kind: "imports",
-  from: `module:${from}`,
-  to: `module:${to}`,
+  from: from,
+  to: to,
   occurrences: [],
   names: ["*"],
   via: [],
@@ -20,7 +20,7 @@ const dense = (files: readonly string[]) =>
 describe("area detection", () => {
   const billing = cluster("src/lib/billing");
   const chat = cluster("src/lib/chat");
-  const ids = [...billing, ...chat, "src/lone.ts"].map((path) => `module:${path}`);
+  const ids = [...billing, ...chat, "src/lone.ts"];
   const edges = [...dense(billing), ...dense(chat), edge("src/lib/chat/f1.ts", "src/lib/billing/f1.ts")];
   const detect = (moduleIds: readonly string[]) => detectAreas(moduleIds, edges, "server");
 
@@ -49,19 +49,19 @@ describe("area detection", () => {
   it("sets a file imported from almost everywhere aside before finding areas", () => {
     const db = "src/lib/db.ts";
     const areas = detectAreas(
-      [...ids, `module:${db}`],
+      [...ids, db],
       [...edges, ...[...billing, ...chat].map((file) => edge(file, db))],
       "server",
     );
     const top = areas.filter((area) => area.parent === null);
 
     expect(top.map((area) => [area.id, area.label, area.moduleIds])).toEqual([
-      ["area:server:lib-billing", "lib/billing", billing.map((file) => `module:${file}`)],
-      ["area:server:lib-chat", "lib/chat", chat.map((file) => `module:${file}`)],
-      ["area:server:widely-used", "Widely used files", [`module:${db}`]],
-      ["area:server:standalone", "Standalone files", ["module:src/lone.ts"]],
+      ["area:server:lib-billing", "lib/billing", billing],
+      ["area:server:lib-chat", "lib/chat", chat],
+      ["area:server:widely-used", "Widely used files", [db]],
+      ["area:server:standalone", "Standalone files", ["src/lone.ts"]],
     ]);
-    expect(areas.filter((area) => area.moduleIds.includes(`module:${db}`)).length).toBe(1);
+    expect(areas.filter((area) => area.moduleIds.includes(db)).length).toBe(1);
   });
 
   it("sets nothing aside when no file stands out", () => {
@@ -87,11 +87,7 @@ describe("area detection", () => {
   it("gives every file the same total folder weight whatever the folder size", () => {
     const big = cluster("src/big").concat(["src/big/f6.ts", "src/big/f7.ts", "src/big/f8.ts"]);
     const pair = ["src/pair/a.ts", "src/pair/b.ts"];
-    const areas = detectAreas(
-      [...big, ...pair].map((path) => `module:${path}`),
-      [],
-      "code",
-    );
+    const areas = detectAreas([...big, ...pair], [], "code");
 
     expect(areas.filter((area) => area.parent === null).map((area) => area.moduleIds.length)).toEqual([8, 2]);
   });
@@ -108,8 +104,8 @@ describe("SvelteKit routes", () => {
       })),
     ).toEqual([
       { url: "/", roles: ["layout", "page", "server-load"], layouts: [] },
-      { url: "/about", roles: ["universal-load"], layouts: ["module:src/routes/+layout.svelte"] },
-      { url: "/api", roles: ["endpoint"], layouts: ["module:src/routes/+layout.svelte"] },
+      { url: "/about", roles: ["universal-load"], layouts: ["src/routes/+layout.svelte"] },
+      { url: "/api", roles: ["endpoint"], layouts: ["src/routes/+layout.svelte"] },
     ]);
   });
 });

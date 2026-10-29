@@ -1,22 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { fileLogic } from "../src/analyze";
-import { bandShares, branchStep, createFacts } from "../src/facts";
-import type { FunctionLogic, GraphSnapshot } from "../src/model";
-import { buildTree, traySides } from "../src/tree";
+import { bandShares, branchStep, createFacts } from "../src/report/facts";
+import type { GraphSnapshot } from "../src/model";
+import { buildTree } from "../src/scan/parts";
 import { fixture, scan } from "./helpers";
 
-const treeOf = (snapshot: GraphSnapshot) => buildTree(snapshot, { grouping: "areas", tray: new Set(traySides) });
-
-const allLogic = async (snapshot: GraphSnapshot) => {
-  const files = [...new Set(snapshot.functions.map((fn) => fn.location.file))];
-  const results = await Promise.all(files.map((file) => fileLogic(snapshot, file)));
-  return new Map<string, FunctionLogic>(results.flatMap((result) => (result.ok ? [...result.value] : [])));
-};
+const treeOf = (snapshot: GraphSnapshot) => buildTree(snapshot);
 
 describe("export facts", () => {
   it("counts a group of files and the imports around it", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
-    const facts = createFacts(snapshot, null);
+    const facts = createFacts(snapshot);
     const all = facts.stats(snapshot.modules.map((module) => module.id));
 
     expect(all.files).toBe(snapshot.modules.length);
@@ -30,7 +23,7 @@ describe("export facts", () => {
 
   it("counts the imports crossing out of a part", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
-    const facts = createFacts(snapshot, null);
+    const facts = createFacts(snapshot);
     const tree = treeOf(snapshot);
     const node = tree.nodes.get("side:server");
 
@@ -50,7 +43,7 @@ describe("export facts", () => {
 
   it("numbers cycles from 1", async () => {
     const snapshot = await scan(fixture("topology"));
-    const facts = createFacts(snapshot, null);
+    const facts = createFacts(snapshot);
     const a = snapshot.modules.find((module) => module.path === "src/a.ts");
 
     expect(facts.cycles).toMatchObject([{ number: 1, files: ["src/a.ts", "src/b.ts"] }]);
@@ -59,31 +52,26 @@ describe("export facts", () => {
 
   it("lists every file a route reaches", async () => {
     const snapshot = await scan(fixture("sveltekit-sides"));
-    const facts = createFacts(snapshot, null);
+    const facts = createFacts(snapshot);
 
     expect(facts.routes.some((route) => route.reach.server.includes("src/lib/server/db.ts"))).toBe(true);
   });
 
-  it("explains every CC with its decisions, unless logic is left out", async () => {
+  it("explains every CC with its decisions", async () => {
     const snapshot = await scan(fixture("sveltekit"));
-    const withLogic = createFacts(snapshot, await allLogic(snapshot));
-    const functions = snapshot.modules.flatMap((module) => withLogic.functionsOf(module.id));
+    const facts = createFacts(snapshot);
+    const functions = snapshot.modules.flatMap((module) => facts.functionsOf(module.id));
 
     expect(functions.length).toBeGreaterThan(0);
     functions.forEach((fn) => {
-      expect(1 + (fn.logic?.decisions ?? []).reduce((sum, decision) => sum + decision.weight, 0)).toBe(fn.cc);
-      expect(fn.logic?.waysOut).toBeGreaterThan(0);
+      expect(1 + fn.decisions.reduce((sum, decision) => sum + decision.weight, 0)).toBe(fn.cc);
+      expect(fn.waysOut).toBeGreaterThan(0);
     });
-
-    const without = createFacts(snapshot, null);
-    expect(snapshot.modules.flatMap((module) => without.functionsOf(module.id)).every((fn) => fn.logic === null)).toBe(
-      true,
-    );
   });
 
   it("ranks fan-in without entry points and barrels, and fan-out without barrels", async () => {
     const snapshot = await scan(fixture("barrels"));
-    const facts = createFacts(snapshot, null);
+    const facts = createFacts(snapshot);
     const fileOf = (path: string) => {
       const module = snapshot.modules.find((candidate) => candidate.path === path);
       if (!module) throw new Error(`${path} missing`);
@@ -97,7 +85,7 @@ describe("export facts", () => {
   });
 
   it("describes each side's health as a whole", async () => {
-    const facts = createFacts(await scan(fixture("topology")), null);
+    const facts = createFacts(await scan(fixture("topology")));
 
     expect(facts.health).toEqual([
       expect.objectContaining({

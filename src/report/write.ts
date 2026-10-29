@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { type Result, err, errorMessage, ok } from "../model";
-import type { Pages } from "./pages";
+
+export type Pages = Map<string, string>;
 
 export const markerFile = ".laqueus-context";
 

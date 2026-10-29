@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type Io, exportUsage, runExport } from "./commands/export";
+import type { Io } from "./commands/common";
+import { exportUsage, runExport } from "./commands/export";
 import { listUsage, runList } from "./commands/list";
 import { errorMessage } from "./model";
 

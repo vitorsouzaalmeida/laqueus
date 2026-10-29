@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createFacts } from "../src/facts";
+import { createFacts } from "../src/report/facts";
 import { edgePairs, fixture, scan } from "./helpers";
 
 const metricsOf = (snapshot: Awaited<ReturnType<typeof scan>>, path: string) =>
@@ -34,8 +34,8 @@ describe("import extraction and resolution", () => {
   it("keeps local imports, flags type-only ones, and drops asset and external ones", async () => {
     const snapshot = await scan(fixture("imports"));
     const fromMain = snapshot.dependencyEdges
-      .filter((edge) => edge.from === "module:src/main.ts")
-      .map((edge) => `${edge.to.replace("module:", "")}${edge.typeOnly ? " (types)" : ""}`)
+      .filter((edge) => edge.from === "src/main.ts")
+      .map((edge) => `${edge.to.replace("", "")}${edge.typeOnly ? " (types)" : ""}`)
       .toSorted();
 
     expect(fromMain).toEqual([
@@ -55,7 +55,7 @@ describe("import extraction and resolution", () => {
   it("records each occurrence behind a single edge", async () => {
     const snapshot = await scan(fixture("imports"));
     const helperEdge = snapshot.dependencyEdges.find(
-      (edge) => edge.from === "module:src/main.ts" && edge.to === "module:src/helper.ts",
+      (edge) => edge.from === "src/main.ts" && edge.to === "src/helper.ts",
     );
 
     expect(helperEdge?.occurrences.map((location) => location.line)).toEqual([3, 4]);
@@ -102,7 +102,7 @@ describe("SvelteKit projects", () => {
   it("extracts functions from both Svelte script blocks and the markup", async () => {
     const snapshot = await scan(fixture("sveltekit"));
     const widget = snapshot.functions
-      .filter((fn) => fn.moduleId === "module:src/lib/Widget.svelte")
+      .filter((fn) => fn.moduleId === "src/lib/Widget.svelte")
       .map((fn) => ({ name: fn.name, line: fn.location.line, complexity: fn.complexity }));
 
     expect(widget).toEqual([
@@ -115,11 +115,11 @@ describe("SvelteKit projects", () => {
 
 const edgesFrom = (snapshot: Awaited<ReturnType<typeof scan>>, from: string) =>
   snapshot.dependencyEdges
-    .filter((edge) => edge.from === `module:${from}`)
+    .filter((edge) => edge.from === from)
     .map((edge) => ({
-      to: edge.to.replace("module:", ""),
+      to: edge.to.replace("", ""),
       names: edge.names,
-      via: edge.via.map((id) => id.replace("module:", "")),
+      via: edge.via.map((id) => id.replace("", "")),
       typeOnly: edge.typeOnly,
     }))
     .toSorted((a, b) => a.to.localeCompare(b.to));
@@ -149,7 +149,7 @@ describe("re-exports and type imports", () => {
     const cycle = snapshot.modules.filter((module) => module.metrics.cycleGroup !== null).map((module) => module.path);
 
     expect(cycle).toEqual(["src/ta.ts", "src/tb.ts"]);
-    expect(createFacts(snapshot, null).cycles[0]).toMatchObject({ withoutTypes: 0 });
+    expect(createFacts(snapshot).cycles[0]).toMatchObject({ withoutTypes: 0 });
     expect(snapshot.modules.find((module) => module.path === "src/types.ts")?.placement.entry).toBeNull();
   });
 

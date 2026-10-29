@@ -14,23 +14,70 @@ export type ModuleMetrics = {
 
 export type Side = "client" | "shared" | "server" | "code" | "unreached" | "tooling";
 
+export type Grouping = "areas" | "folders";
+
+export type SideInfo = { side: Side; label: string; description: string; grouping: Grouping };
+
+export const sideInfo = (kit: boolean): readonly SideInfo[] => [
+  {
+    side: "client",
+    label: "UI / client bundle",
+    description:
+      "Reached only from components, universal loads and client hooks. SvelteKit ships this code to the browser (it also runs during server-side rendering).",
+    grouping: "areas",
+  },
+  {
+    side: "shared",
+    label: "Shared",
+    description: "Reached from both the client bundle and server-only entry points.",
+    grouping: "areas",
+  },
+  {
+    side: "server",
+    label: "Server only",
+    description:
+      "Reached only from server entry points (+page.server, +layout.server, +server, hooks.server) or marked server-only by SvelteKit ($lib/server, *.server.*). Never sent to the browser.",
+    grouping: "areas",
+  },
+  {
+    side: "code",
+    label: "Code",
+    description: kit
+      ? "Source files outside a SvelteKit app and not reached from one."
+      : "Source files of the project.",
+    grouping: "areas",
+  },
+  {
+    side: "unreached",
+    label: "Not reached",
+    description:
+      "Inside a SvelteKit app, but no entry point imports it at runtime. It may be unused, used only by tests or for types, or loaded in a way static imports do not show.",
+    grouping: "folders",
+  },
+  {
+    side: "tooling",
+    label: "Tooling & config",
+    description: kit
+      ? "Config files and SvelteKit app files outside src/ (scripts, build and test setup)."
+      : "Config files (build and test setup).",
+    grouping: "folders",
+  },
+];
+
 export type Placement = {
   side: Side;
   entry: string | null;
-  reason: string;
   chains: { client?: string[]; server?: string[] };
 };
 
 export type ModuleNode = {
   id: string;
   path: string;
-  functionIds: string[];
   metrics: ModuleMetrics;
   placement: Placement;
   groupId: string;
   areaId: string | null;
   subAreaId: string | null;
-  depth: number;
   externals: string[];
   barrel: boolean;
 };
@@ -66,9 +113,11 @@ export type Route = {
   layouts: string[];
 };
 
-export type Lane = { side: Side; label: string; description: string };
-
 export type ModuleGroup = { id: string; side: Side; directory: string; moduleIds: string[] };
+
+export type DecisionKind = "if" | "loop" | "case" | "catch" | "return" | "throw" | "statement";
+
+export type Decision = { line: number; kind: DecisionKind; weight: number; label: string };
 
 export type FunctionNode = {
   id: string;
@@ -79,6 +128,8 @@ export type FunctionNode = {
   branches: number;
   inclusive: number;
   outerWrites: number;
+  decisions: Decision[];
+  waysOut: number;
 };
 
 export type ClassNode = {
@@ -126,7 +177,7 @@ export type GraphSnapshot = {
   scannedAt: string;
   durationMs: number;
   framework: "sveltekit" | null;
-  lanes: Lane[];
+  sides: SideInfo[];
   groups: ModuleGroup[];
   areas: Area[];
   routes: Route[];
@@ -138,49 +189,6 @@ export type GraphSnapshot = {
   diagnostics: Diagnostic[];
 };
 
-export type LogicNodeKind =
-  | "start"
-  | "block"
-  | "decision"
-  | "loop"
-  | "switch"
-  | "try"
-  | "catch"
-  | "finally"
-  | "return"
-  | "throw"
-  | "end";
-
-export type LogicEdgeKind = "normal" | "true" | "false" | "case" | "back" | "break" | "exception";
-
-export type LogicNode = {
-  id: string;
-  kind: LogicNodeKind;
-  label: string;
-  lines: { start: number; end: number };
-  weight: number;
-  calls: string[];
-  nested: string[];
-  region: string | null;
-  unreachable: boolean;
-  awaits: boolean;
-};
-
-export type LogicEdge = { id: string; from: string; to: string; label: string; kind: LogicEdgeKind };
-
-export type LogicOutlineItem = { text: string; nodeId: string | null; children: LogicOutlineItem[] };
-
-export type FunctionLogic = {
-  functionId: string;
-  name: string;
-  file: string;
-  complexity: number;
-  nodes: LogicNode[];
-  edges: LogicEdge[];
-  outline: LogicOutlineItem[];
-  source: { firstLine: number; lines: string[] };
-};
-
 export type Result<T, E = string> = { ok: true; value: T } | { ok: false; error: E };
 
 export const ok = <T>(value: T): Result<T, never> => ({ ok: true, value });
@@ -188,8 +196,13 @@ export const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
 
 export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export const moduleId = (path: string) => `module:${path}`;
-export const modulePath = (id: string) => id.slice("module:".length);
+export const byText = (a: string, b: string) => a.localeCompare(b);
+
+export const directoryOf = (path: string) => {
+  const slash = path.lastIndexOf("/");
+  return slash === -1 ? "." : path.slice(0, slash);
+};
+
 export const functionId = (location: Location) => `fn:${location.file}:${location.line}:${location.column}`;
 export const classId = (location: Location) => `class:${location.file}:${location.line}:${location.column}`;
 export const isStandaloneArea = (id: string) => id.endsWith(":standalone");

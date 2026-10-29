@@ -27,9 +27,9 @@ const extensionSwaps: Readonly<Record<string, readonly string[]>> = {
   ".mjs": [".mts"],
   ".cjs": [".cts"],
 };
-const libAliases = ["$lib", "#lib"];
 const configNames = ["tsconfig.json", "jsconfig.json"];
-const appMarkers = ["svelte.config.js", "svelte.config.ts", "svelte.config.mjs", "package.json"];
+
+export type LibAlias = { names: readonly string[]; folder: readonly string[]; markers: readonly string[] };
 
 const defaultOptions: ts.CompilerOptions = {
   module: ts.ModuleKind.ESNext,
@@ -56,10 +56,10 @@ const isRelative = (specifier: string) =>
   specifier === ".." ||
   path.isAbsolute(specifier);
 
-const libAliasRest = (specifier: string): string | undefined =>
-  libAliases
-    .filter((alias) => specifier === alias || specifier.startsWith(`${alias}/`))
-    .map((alias) => specifier.slice(alias.length + 1))[0];
+const libAliasRest = (alias: LibAlias, specifier: string): string | undefined =>
+  alias.names
+    .filter((name) => specifier === name || specifier.startsWith(`${name}/`))
+    .map((name) => specifier.slice(name.length + 1))[0];
 
 const isAsset = (specifier: string) => {
   const extension = path.extname(stripQuery(specifier));
@@ -162,13 +162,13 @@ const typescriptResolve = (specifier: string, importer: string, config: ProjectC
   return attempt(config.options, config.cache) ?? attempt(config.bundlerOptions, config.bundlerCache);
 };
 
-const looksLocal = (specifier: string, config: ProjectConfig) =>
+const looksLocal = (alias: LibAlias, specifier: string, config: ProjectConfig) =>
   isRelative(specifier) ||
   specifier.startsWith("#") ||
-  libAliasRest(specifier) !== undefined ||
+  libAliasRest(alias, specifier) !== undefined ||
   pathMappedBases(config, stripQuery(specifier)).length > 0;
 
-export const createResolver = (root: string, sourceFiles: ReadonlySet<string>): Resolver => {
+export const createResolver = (root: string, sourceFiles: ReadonlySet<string>, alias: LibAlias): Resolver => {
   const fallbackConfig = defaultConfig(root);
 
   const configForDir = memoize((dir: string): ProjectConfig => {
@@ -183,7 +183,7 @@ export const createResolver = (root: string, sourceFiles: ReadonlySet<string>): 
   const appRootForDir = memoize(
     (dir: string): string =>
       ancestorsWithin(dir, root).find((candidate) =>
-        appMarkers.some((marker) => existsSync(path.join(candidate, marker))),
+        alias.markers.some((marker) => existsSync(path.join(candidate, marker))),
       ) ?? root,
   );
 
@@ -203,11 +203,13 @@ export const createResolver = (root: string, sourceFiles: ReadonlySet<string>): 
 
   const manualResolve = (specifier: string, importer: string, config: ProjectConfig) => {
     const clean = stripQuery(specifier);
-    const aliasRest = libAliasRest(clean);
+    const aliasRest = libAliasRest(alias, clean);
     const bases = [
       ...(isRelative(clean) ? [path.resolve(path.dirname(importer), clean)] : []),
       ...pathMappedBases(config, clean),
-      ...(aliasRest === undefined ? [] : [path.join(appRootForDir(path.dirname(importer)), "src", "lib", aliasRest)]),
+      ...(aliasRest === undefined
+        ? []
+        : [path.join(appRootForDir(path.dirname(importer)), ...alias.folder, aliasRest)]),
     ];
 
     return bases.map(findSource).find((found) => found !== undefined);
@@ -225,11 +227,11 @@ export const createResolver = (root: string, sourceFiles: ReadonlySet<string>): 
 
     if (viaFallback !== undefined) return { kind: "local", file: viaFallback };
 
-    const external = looksLocal(specifier, config) ? undefined : packageName(stripQuery(specifier));
+    const external = looksLocal(alias, specifier, config) ? undefined : packageName(stripQuery(specifier));
 
     if (external !== undefined) return { kind: "external", name: external };
 
-    if (viaTypescript !== undefined || isAsset(specifier) || !looksLocal(specifier, config)) {
+    if (viaTypescript !== undefined || isAsset(specifier) || !looksLocal(alias, specifier, config)) {
       return { kind: "ignored" };
     }
 

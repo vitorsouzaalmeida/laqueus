@@ -1,9 +1,8 @@
+import { excessFrom, highFrom } from "../language/complexity";
+
 export type CcBand = "low" | "moderate" | "high";
 export type FanBand = "low" | "moderate" | "high" | "extreme";
 export type CycleSeverityLevel = "minor" | "moderate" | "severe";
-
-export const excessFrom = 10;
-export const highFrom = 16;
 
 export const ccBand = (cc: number): CcBand => {
   if (cc <= excessFrom) return "low";

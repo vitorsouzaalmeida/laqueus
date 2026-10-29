@@ -1,7 +1,17 @@
+import path from "node:path";
+import type { ScopeManager } from "@typescript-eslint/scope-manager";
 import type { TSESTree } from "@typescript-eslint/types";
-import type { Location } from "./model";
+import type { Location } from "../model";
 
 export type VisitorKeys = Readonly<Record<string, readonly string[] | undefined>>;
+
+export type Parsed = {
+  /** Top-level statements: the whole program, or the contents of every Svelte script element. */
+  roots: TSESTree.ProgramStatement[];
+  template: TSESTree.Node[];
+  keys: VisitorKeys;
+  scope: ScopeManager;
+};
 
 /** The functions the analysis measures; TypeScript-only signatures have no runtime body. */
 export type FunctionLike =
@@ -151,3 +161,10 @@ export const outerOfWrappers = (
   const parent = parents.get(node);
   return parent && isWrapper(parent) ? outerOfWrappers(parent, parents) : node;
 };
+
+export const read = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+
+export const toPosix = (value: string) => value.split(path.sep).join("/");
+
+export type Parents = ReadonlyMap<TSESTree.Node, TSESTree.Node>;
