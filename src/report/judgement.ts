@@ -15,6 +15,8 @@ export type RankScale = {
   band: (value: number) => FanBand;
   cutoffs: { moderate: number | null; high: number | null; extreme: number | null };
   population: number;
+  lowest: number | null;
+  highest: number | null;
 };
 
 const fanBand = (rank: number): FanBand => {
@@ -49,6 +51,8 @@ export const rankScale = (values: readonly number[]): RankScale => {
     band,
     cutoffs: { moderate: cutoffFor(75), high: cutoffFor(90), extreme: cutoffFor(95) },
     population: n,
+    lowest: sorted[0] ?? null,
+    highest: sorted.at(-1) ?? null,
   };
 };
 

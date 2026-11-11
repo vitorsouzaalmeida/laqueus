@@ -11,9 +11,11 @@ const forEachBit = (words: Uint32Array, visit: (index: number) => void) => {
 };
 
 export const visibility = (nodes: readonly string[], edges: readonly Edge[]): Map<string, Visibility> => {
-  const adjacency = adjacencyOf(edges.filter((edge) => edge.from !== edge.to));
-  const components = stronglyConnectedComponents(nodes, adjacency);
   const position = new Map(nodes.map((node, index) => [node, index]));
+  const adjacency = adjacencyOf(
+    edges.filter((edge) => edge.from !== edge.to && position.has(edge.from) && position.has(edge.to)),
+  );
+  const components = stronglyConnectedComponents(nodes, adjacency);
   const componentOf = new Map(
     components.flatMap((component, index) => component.map((node) => [node, index] as const)),
   );

@@ -115,7 +115,7 @@ export const findingsPage = (ctx: Context) => {
           findingCycles.map(
             (cycle) =>
               `Cycle #${cycle.number}, ${severityText(cycle)}; ${cycle.reach.pairs} file pairs pass through it${
-                cycle.withoutTypes === 0 ? "; it exists only because of type imports" : ""
+                cycle.withoutTypes.files === 0 ? "; it exists only because of type imports" : ""
               }. Cut: ${cycle.cuts[0] ? cutText(cycle.cuts[0]) : "none found"}`,
           ),
         )}\n\nEvery choice and the imports of each cycle: \`_cycles.md\`.`,

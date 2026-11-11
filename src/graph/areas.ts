@@ -1,4 +1,4 @@
-import { type Area, type Side, directoryOf } from "../model";
+import { type Area, type Side, byText, directoryOf, uniqueNames } from "../model";
 import type { Edge } from "./cycles";
 
 type WeightedEdge = readonly [number, number, number];
@@ -118,11 +118,17 @@ const aggregate = (communities: readonly number[], edges: readonly WeightedEdge[
     .values(),
 ];
 
+const pushTo = <K, V>(map: Map<K, V[]>, key: K, value: V) => {
+  const known = map.get(key);
+
+  if (known) known.push(value);
+  else map.set(key, [value]);
+
+  return map;
+};
+
 const affinityEdges = (ids: readonly string[]): WeightedEdge[] => {
-  const byFolder = ids.reduce(
-    (map, id, node) => map.set(directoryOf(id), [...(map.get(directoryOf(id)) ?? []), node]),
-    new Map<string, number[]>(),
-  );
+  const byFolder = ids.reduce((map, id, node) => pushTo(map, directoryOf(id), node), new Map<string, number[]>());
   return [...byFolder.values()]
     .filter((members) => members.length > 1 && members.length <= largestAffineFolder)
     .flatMap((members) =>
@@ -153,6 +159,13 @@ const countUnder = (ids: readonly string[]) =>
 
 const shortDirectory = (directory: string) => directory.split("/").slice(-2).join("/");
 
+const commonDirectory = (members: readonly string[]) => {
+  const [first = [], ...rest] = members.map((id) => id.split("/").slice(0, -1));
+  const length = first.findIndex((segment, index) => rest.some((segments) => segments[index] !== segment));
+
+  return first.slice(0, length === -1 ? first.length : length).join("/");
+};
+
 const labeller = (groups: readonly (readonly string[])[], allIds: readonly string[]) => {
   const projectCounts = countUnder(allIds);
   const isGenericRoot = (directory: string) => (projectCounts.get(directory) ?? 0) >= allIds.length * 0.5;
@@ -167,13 +180,17 @@ const labeller = (groups: readonly (readonly string[])[], allIds: readonly strin
       return map;
     }, new Map<string, number>());
     return [...counts]
-      .filter(([, count]) => count / members.length >= minimumLabelShare)
+      .filter(
+        ([token, count]) =>
+          count / members.length >= minimumLabelShare &&
+          (groups.length < 2 || (documentFrequency.get(token) ?? 0) < groups.length),
+      )
       .map(([token, count]) => ({
         token,
         score: (count / members.length) * Math.log((groups.length + 1) / (documentFrequency.get(token) ?? 1)),
       }))
       .filter((candidate) => candidate.score > 0)
-      .toSorted((a, b) => b.score - a.score || a.token.localeCompare(b.token))
+      .toSorted((a, b) => b.score - a.score || byText(a.token, b.token))
       .slice(0, 2)
       .map((candidate) => candidate.token)
       .join(" / ");
@@ -190,6 +207,10 @@ const labeller = (groups: readonly (readonly string[])[], allIds: readonly strin
 
     if (tokens !== "") return tokens;
 
+    const shared = commonDirectory(members);
+
+    if (shared !== "") return shortDirectory(shared);
+
     const first = members[0];
 
     return first ? shortDirectory(directoryOf(first)) : "files";
@@ -203,18 +224,12 @@ const slug = (label: string) =>
     .replace(/^-|-$/g, "") || "area";
 
 const uniqueLabels = (labels: readonly string[]): string[] =>
-  labels.map((label, position) => {
-    const before = labels.slice(0, position).filter((other) => other === label).length;
-    return before === 0 ? label : `${label} (${before + 1})`;
-  });
+  uniqueNames(labels, [], (label, count) => `${label} (${count})`);
 
 type Group = { members: string[]; parent: number | null };
 
 const groupsOf = (assignment: readonly number[]) =>
-  assignment.reduce(
-    (map, community, node) => map.set(community, [...(map.get(community) ?? []), node]),
-    new Map<number, number[]>(),
-  );
+  assignment.reduce((map, community, node) => pushTo(map, community, node), new Map<number, number[]>());
 
 export const detectAreas = (moduleIds: readonly string[], edges: readonly Edge[], side: Side): Area[] => {
   const all = moduleIds.toSorted();
@@ -232,11 +247,9 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Edge[]
     return a === undefined || b === undefined || a === b ? [] : [[a, b, 1] as const];
   });
   const connected = new Set(importEdges.flatMap(([a, b]) => [a, b]));
-  const firstLevel = modularityPass(ids.length, [...importEdges, ...affinityEdges(ids)]);
-  const secondLevelOfFirst = modularityPass(
-    Math.max(...firstLevel) + 1,
-    aggregate(firstLevel, [...importEdges, ...affinityEdges(ids)]),
-  );
+  const allEdges = [...importEdges, ...affinityEdges(ids)];
+  const firstLevel = modularityPass(ids.length, allEdges);
+  const secondLevelOfFirst = modularityPass(Math.max(...firstLevel) + 1, aggregate(firstLevel, allEdges));
 
   const idOf = (node: number) => at(ids, node);
   const isStandalone = (nodes: readonly number[]) => nodes.length === 1 && nodes.every((node) => !connected.has(node));
@@ -269,8 +282,12 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Edge[]
   const bySize = (a: Group, b: Group) => b.members.length - a.members.length;
   const coarseSorted = coarse.toSorted(bySize);
   const coarseLabels = uniqueLabels(coarseSorted.map((group) => label(group.members)));
-  const coarseIds = coarseLabels.map((value) => `area:${side}:${slug(value)}`);
-  const uniqueIds = uniqueLabels(coarseIds).map((value) => value.replace(/ \((\d+)\)$/, "-$1"));
+  const standaloneId = `area:${side}:standalone`;
+  const widelyUsedId = `area:${side}:widely-used`;
+  const uniqueIds = uniqueNames(
+    coarseLabels.map((value) => `area:${side}:${slug(value)}`),
+    [standaloneId, widelyUsedId],
+  );
 
   const internal = (members: readonly string[]) => {
     const set = new Set(members);
@@ -324,12 +341,10 @@ export const detectAreas = (moduleIds: readonly string[], edges: readonly Edge[]
   const standaloneArea =
     standalone.length === 0
       ? []
-      : [toArea({ members: standalone.map(idOf), parent: null }, `area:${side}:standalone`, "Standalone files", null)];
+      : [toArea({ members: standalone.map(idOf), parent: null }, standaloneId, "Standalone files", null)];
 
   const widelyUsedArea =
-    aside.size === 0
-      ? []
-      : [toArea({ members: [...aside], parent: null }, `area:${side}:widely-used`, "Widely used files", null)];
+    aside.size === 0 ? [] : [toArea({ members: [...aside], parent: null }, widelyUsedId, "Widely used files", null)];
 
   return [...topAreas, ...widelyUsedArea, ...standaloneArea, ...subAreas];
 };

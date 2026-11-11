@@ -6,7 +6,9 @@ import { buildPages } from "../src/report/pages/index";
 import { createFacts } from "../src/report/facts";
 import type { GraphSnapshot } from "../src/model";
 import { buildTree, partNames } from "../src/scan/parts";
-import { fixture, scan } from "./helpers";
+import { code, escapeText, page as renderPage } from "../src/report/markdown";
+import { writeContext } from "../src/report/write";
+import { fixture, scan, withProject } from "./helpers";
 
 const pagesOf = (snapshot: GraphSnapshot, exportedAt = "2026-10-20T12:00:00.000Z", scope?: string) => {
   const tree = buildTree(snapshot);
@@ -213,5 +215,50 @@ export const pick = (n: number) => {
     expect(buildPages(createFacts(snapshot), tree, { exportedAt: "x", logic: false, scope: "side:nowhere" }).ok).toBe(
       false,
     );
+  });
+});
+
+describe("page text", () => {
+  it("gives examples that exist in the export, SvelteKit or not", async () => {
+    const { pages } = pagesOf(await scan(fixture("topology")));
+    const cited = (name: string) =>
+      [...(pages.get(name) ?? "").matchAll(/e\.g\. `([^`\s]+\.md)`/g)].map((match) => match[1] ?? "");
+
+    expect([...cited("_index.md"), ...cited("_definitions.md")].length).toBeGreaterThan(0);
+    [...cited("_index.md"), ...cited("_definitions.md")].forEach((name) => expect(pages.has(name)).toBe(true));
+    expect(pages.get("_index.md")).not.toContain("server/");
+  });
+
+  it("says when a scale only has low values instead of calling them equal", async () => {
+    const files = { "src/a.ts": 'import { b } from "./b";\nexport const a = b;', "src/b.ts": "export const b = 1;" };
+
+    await withProject(files, async (root) => {
+      const home = pagesOf(await scan(root)).pages.get("_index.md") ?? "";
+
+      expect(home).toContain("- Fan-out, code: all values in the low band, from 0 to 1 (of 2 ranked files)");
+    });
+  });
+
+  it("says a scoped file list covers only the scope", async () => {
+    const { pages } = pagesOf(await scan(fixture("sveltekit-sides")), "2026-10-20T12:00:00.000Z", "side:server");
+
+    expect(pages.get("_files.md")).toContain("Every source file in this export's scope");
+  });
+
+  it("keeps code spans, headings and warnings on one line", () => {
+    expect(code("return ``;")).toBe("```return ``;```");
+    expect(code("multi\nline")).toBe("`multi\\nline`");
+    expect(escapeText("_x_ [a]")).toBe("\\_x\\_ \\[a\\]");
+    expect(renderPage("first\nline", "*bold*")).toBe("first\\nline\n\n# \\*bold\\*\n");
+  });
+});
+
+describe("export directory", () => {
+  it("refuses to replace a directory that holds the project", async () => {
+    await withProject({ ".laqueus-context": "", "project/src/a.ts": "export const a = 1;" }, async (root) => {
+      const written = await writeContext(root, new Map([["_index.md", "x"]]), [path.join(root, "project")]);
+
+      expect(written.ok).toBe(false);
+    });
   });
 });

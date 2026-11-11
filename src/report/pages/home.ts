@@ -5,7 +5,7 @@ import type { Context } from "./context";
 import { kindLabel, statsLine } from "./text";
 
 export const homePage = (ctx: Context) => {
-  const { facts, options, add, kit, scopeNode, modules, names, inPart, pageOf, trail, scopeSides } = ctx;
+  const { facts, options, add, kit, scopeNode, modules, names, inPart, pageOf, trail, scopeSides, examples } = ctx;
 
   const all = facts.stats(modules.map((module) => module.id));
   const scopeName = scopeNode ? (names.get(scopeNode.id) ?? "") : "";
@@ -13,7 +13,7 @@ export const homePage = (ctx: Context) => {
   const scopeTitle = scoped ? `${trail(scopeNode.id)} (${scopeName})` : facts.project.name;
   const sideScale = (side: Side) => facts.scaleOf(side);
   const cutoffText = (label: string, scale: ReturnType<typeof sideScale>["fanIn"]) => {
-    const { cutoffs, population } = scale;
+    const { cutoffs, population, lowest, highest } = scale;
     const parts = [
       ...(cutoffs.moderate === null ? [] : [`moderate from ${cutoffs.moderate}`]),
       ...(cutoffs.high === null ? [] : [`high from ${cutoffs.high}`]),
@@ -21,7 +21,9 @@ export const homePage = (ctx: Context) => {
     ];
     if (population === 0) return `- ${label}: no ranked files`;
 
-    return `- ${label}: ${parts.length > 0 ? parts.join(", ") : "all values equal"} (of ${plural(population, "ranked file")})`;
+    const spread = lowest === highest ? "all values equal" : `all values in the low band, from ${lowest} to ${highest}`;
+
+    return `- ${label}: ${parts.length > 0 ? parts.join(", ") : spread} (of ${plural(population, "ranked file")})`;
   };
   const judgementSides = facts.sides.map((info) => info.side).filter((side) => scopeSides.has(side));
 
@@ -65,9 +67,9 @@ export const homePage = (ctx: Context) => {
               ]
             : []),
           "Start with `_health.md` for how each side looks as a whole, then `_findings.md` for what stands out: complex functions, logic held in inner functions, the files most changes pass through, cycles with the imports that would break them, and layers between areas.",
-          "The project is split into parts the way `laqueus list` splits it: one folder per side, e.g. `server/_index.md`, and in it one page per area, sub-area or folder, e.g. `server/src-lib.md`. A part page describes the part, what it depends on and what uses it, then each of its files.",
+          `The project is split into parts the way \`laqueus list\` splits it: one folder per side${examples.index ? `, e.g. ${code(examples.index)}` : ""}, and in it one page per area, sub-area or folder${examples.leaf ? `, e.g. ${code(examples.leaf)}` : ""}. A part page describes the part, what it depends on and what uses it, then each of its files.`,
           "`_files.md` lists every source file with the page that describes it, e.g. `grep 'src/lib/x.ts' _files.md`.",
-          "The first line of every page is a one-line summary. Read first lines to scan a level, e.g. `head -qn1 server/*.md`.",
+          `The first line of every page is a one-line summary. Read first lines to scan a level, e.g. ${code(`head -qn1 ${examples.folder}*.md`)}.`,
           'Facts are written as `- Label: value` lines, so they can be searched, e.g. `grep -rn "Cycle: #<n>" .` for the files of one cycle.',
           "Test files are not scanned (see Scope in `_definitions.md`).",
           `Also: \`_areas.md\`, \`_cycles.md\`, \`_packages.md\`, ${kit ? "`_routes/_index.md`, " : ""}\`_diagnostics.md\`. What each label counts: \`_definitions.md\`.`,

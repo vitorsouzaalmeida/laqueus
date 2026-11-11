@@ -6,6 +6,10 @@ import { type Parents, type Parsed, read } from "./ast";
 
 export const templateName = "<template>";
 
+export const scriptName = "<script>";
+
+export const moduleName = "<module>";
+
 export const templateBranches = new Set([
   "SvelteIfBlock",
   "SvelteEachBlock",
@@ -52,6 +56,7 @@ export const parseSvelte = (absolute: string, code: string): Parsed => {
     template: markup as unknown as TSESTree.Node[],
     keys: output.visitorKeys,
     scope: output.scopeManager as unknown as ScopeManager,
+    comments: (output.ast.comments ?? []) as unknown as TSESTree.Comment[],
   };
 };
 

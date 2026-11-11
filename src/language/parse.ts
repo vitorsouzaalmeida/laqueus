@@ -18,19 +18,47 @@ const parseScript = (absolute: string, code: string): Parsed => {
     filePath: absolute,
     loc: true,
     range: true,
+    comment: true,
     jsx: !absolute.endsWith(".ts"),
     jsDocParsingMode: "none",
   });
 
-  return { roots: ast.body, template: [], keys: visitorKeys, scope: analyzeScope(ast, { sourceType: "module" }) };
+  return {
+    roots: ast.body,
+    template: [],
+    keys: visitorKeys,
+    scope: analyzeScope(ast, { sourceType: "module" }),
+    comments: ast.comments ?? [],
+  };
 };
 
-export const parseSource = (root: string, absolute: string, code: string): Result<ParsedFile, Diagnostic> => {
+const closedScripts = (code: string) => code.replace(/([^\s;])([ \t]*)<\/script>/g, "$1;$2</script>");
+
+const parseComponent = (absolute: string, code: string): { code: string; parsed: Parsed } => {
+  try {
+    return { code, parsed: parseSvelte(absolute, code) };
+  } catch (error) {
+    const closed = closedScripts(code);
+
+    if (closed === code) throw error;
+
+    try {
+      return { code: closed, parsed: parseSvelte(absolute, closed) };
+    } catch {
+      throw error;
+    }
+  }
+};
+
+export const parseSource = (root: string, absolute: string, source: string): Result<ParsedFile, Diagnostic> => {
   const relative = toPosix(path.relative(root, absolute));
+  const code = source.replace(/^\uFEFF/, "");
 
   try {
-    const parsed = isComponent(absolute) ? parseSvelte(absolute, code) : parseScript(absolute, code);
-    return ok({ path: relative, absolute, code, ...parsed });
+    const result = isComponent(absolute)
+      ? parseComponent(absolute, code)
+      : { code, parsed: parseScript(absolute, code) };
+    return ok({ path: relative, absolute, code: result.code, ...result.parsed });
   } catch (error) {
     return err({
       file: relative,

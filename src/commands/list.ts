@@ -1,14 +1,13 @@
 import path from "node:path";
-import { type Result, byText, err, ok } from "../model";
-import { type Facts, createFacts } from "../report/facts";
-import { type Tree, type TreeNode, ancestry, buildTree, findPart, partNames } from "../scan/parts";
+import { type GraphSnapshot, type Result, byText, err, ok } from "../model";
+import { type Tree, type TreeNode, buildTree, findPart, partNames } from "../scan/parts";
 import { type Io, parse, scan } from "./common";
 
 export type ListOptions = { root: string; part: string; help: boolean };
 
 export const listUsage = `Usage: laqueus list [part] [-C <dir>]
 
-  Lists the parts of the project as JSON: sides, then areas and sub-areas.
+  Lists the parts of the project, one per line: sides, then areas and sub-areas.
   Pass a part to look inside it; the deepest parts list their files.
   Any listed part can be exported with "laqueus export <part>".
 
@@ -31,63 +30,16 @@ export const parseListArgs = (argv: readonly string[], cwd: string): Result<List
   return ok({ root: path.resolve(cwd, values.project ?? "."), part: positionals[0] ?? "", help: values.help });
 };
 
-const kindLabel = { root: "project", side: "side", area: "area", subarea: "sub-area", folder: "folder" };
-
-const partsRows = (facts: Facts, names: ReadonlyMap<string, string>, nodes: readonly TreeNode[]) =>
-  nodes.map((node) => {
-    const stats = facts.stats(node.moduleIds);
-    return {
-      part: names.get(node.id) ?? "",
-      label: node.label,
-      kind: kindLabel[node.kind],
-      files: stats.files,
-      functions: stats.functions,
-      decisions: stats.decisions,
-      excessCC: stats.excessCC,
-      maxCC: stats.maxCC,
-    };
-  });
-
-const filesRows = (facts: Facts, node: TreeNode) =>
-  node.moduleIds
-    .flatMap((id) => facts.modules.get(id) ?? [])
-    .toSorted((a, b) => byText(a.path, b.path))
-    .map((module) => ({
-      path: module.path,
-      functions: module.metrics.functionCount,
-      decisions: module.metrics.decisions,
-      excessCC: module.metrics.excessCC,
-      maxCC: module.metrics.maxCC,
-      fanIn: module.metrics.fanIn,
-      fanOut: module.metrics.fanOut,
-    }));
-
-const listPart = (facts: Facts, tree: Tree, names: ReadonlyMap<string, string>, node: TreeNode) => {
-  const byArea = new Set(facts.sides.filter((info) => info.grouping === "areas").map((info) => info.side));
-  const name = names.get(node.id) ?? "";
-  const pathLabels = ancestry(tree, node.id).flatMap((id) => tree.nodes.get(id)?.label ?? []);
+const listPart = (data: GraphSnapshot, tree: Tree, names: ReadonlyMap<string, string>, node: TreeNode) => {
+  const byArea = new Set(data.sides.filter((info) => info.grouping === "areas").map((info) => info.side));
   const children = node.children.flatMap((id) => tree.nodes.get(id) ?? []);
   const main = children.filter((child) => node.kind !== "root" || child.side === null || byArea.has(child.side));
   const hidden = children.filter((child) => !main.includes(child));
 
-  return children.length === 0
-    ? {
-        part: name,
-        label: node.label,
-        kind: kindLabel[node.kind],
-        path: pathLabels,
-        stats: facts.stats(node.moduleIds),
-        files: filesRows(facts, node),
-      }
-    : {
-        part: name,
-        label: node.label,
-        kind: kindLabel[node.kind],
-        path: pathLabels,
-        stats: facts.stats(node.moduleIds),
-        parts: partsRows(facts, names, main),
-        hidden: partsRows(facts, names, hidden),
-      };
+  if (children.length > 0) return [...main, ...hidden].map((child) => names.get(child.id) ?? "");
+
+  const paths = new Map(data.modules.map((module) => [module.id, module.path]));
+  return node.moduleIds.flatMap((id) => paths.get(id) ?? []).toSorted(byText);
 };
 
 export const runList = async (argv: readonly string[], io: Io): Promise<number> => {
@@ -119,11 +71,11 @@ export const runList = async (argv: readonly string[], io: Io): Promise<number> 
     return 1;
   }
 
-  const result = listPart(createFacts(scanned.value), tree, names, node.value);
-  io.out(`${JSON.stringify(result, null, 2)}\n`);
+  const lines = listPart(scanned.value, tree, names, node.value);
+  io.out(lines.length === 0 ? "" : `${lines.join("\n")}\n`);
   io.log(
-    "files" in result
-      ? `Next: laqueus export ${result.part}`
+    node.value.children.length === 0
+      ? `Next: laqueus export ${names.get(node.value.id) ?? ""}`
       : "Next: laqueus list <part> to look inside, laqueus export <part> to export it.",
   );
   return 0;

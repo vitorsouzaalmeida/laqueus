@@ -196,7 +196,35 @@ export const err = <E>(error: E): Result<never, E> => ({ ok: false, error });
 
 export const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-export const byText = (a: string, b: string) => a.localeCompare(b);
+const collator = new Intl.Collator("en");
+
+export const byText = (a: string, b: string) => collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
+
+export const uniqueNames = (
+  names: readonly string[],
+  reserved: readonly string[] = [],
+  numbered = (name: string, count: number) => `${name}-${count}`,
+): string[] => {
+  const used = new Set([...reserved, ...names]);
+  const taken = new Set(reserved);
+
+  return names.map((name) => {
+    if (!taken.has(name)) {
+      taken.add(name);
+      return name;
+    }
+
+    for (let count = 2; ; count++) {
+      const candidate = numbered(name, count);
+
+      if (!used.has(candidate)) {
+        used.add(candidate);
+        taken.add(candidate);
+        return candidate;
+      }
+    }
+  });
+};
 
 export const directoryOf = (path: string) => {
   const slash = path.lastIndexOf("/");

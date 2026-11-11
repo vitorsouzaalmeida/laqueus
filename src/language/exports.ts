@@ -49,7 +49,14 @@ const declaredNames = (declaration: TSESTree.NamedExportDeclarations): string[] 
   }
 };
 
-type Exports = { own: boolean; forwards: number; names: string[]; reexports: Reexport[]; stars: string[] };
+type Exports = {
+  own: boolean;
+  forwards: number;
+  names: string[];
+  reexports: Reexport[];
+  stars: string[];
+  typeStars: string[];
+};
 
 export const extractExports = (file: ParsedFile): ExportTable => {
   const statements = file.roots;
@@ -58,30 +65,42 @@ export const extractExports = (file: ParsedFile): ExportTable => {
       statement.type === "ImportDeclaration"
         ? statement.specifiers.map(
             (specifier) =>
-              [specifier.local.name, { specifier: statement.source.value, imported: importedName(specifier) }] as const,
+              [
+                specifier.local.name,
+                {
+                  specifier: statement.source.value,
+                  imported: importedName(specifier),
+                  typeOnly:
+                    statement.importKind === "type" ||
+                    (specifier.type === "ImportSpecifier" && specifier.importKind === "type"),
+                },
+              ] as const,
           )
         : [],
     ),
   );
 
   const visit = (statement: TSESTree.ProgramStatement): Exports => {
-    const none: Exports = { own: false, forwards: 0, names: [], reexports: [], stars: [] };
+    const none: Exports = { own: false, forwards: 0, names: [], reexports: [], stars: [], typeStars: [] };
 
     switch (statement.type) {
       case "ImportDeclaration":
         return none;
       case "ExportAllDeclaration": {
         const specifier = statement.source.value;
-        const forwards = statement.exportKind === "type" ? 0 : 1;
+        const typeOnly = statement.exportKind === "type";
+        const forwards = typeOnly ? 0 : 1;
 
         return statement.exported
           ? {
               ...none,
               forwards,
               names: [nameOf(statement.exported)],
-              reexports: [{ name: nameOf(statement.exported), specifier, imported: "*" }],
+              reexports: [{ name: nameOf(statement.exported), specifier, imported: "*", typeOnly }],
             }
-          : { ...none, forwards, stars: [specifier] };
+          : typeOnly
+            ? { ...none, typeStars: [specifier] }
+            : { ...none, forwards, stars: [specifier] };
       }
       case "ExportNamedDeclaration": {
         if (statement.declaration)
@@ -93,10 +112,11 @@ export const extractExports = (file: ParsedFile): ExportTable => {
         const bound = statement.specifiers.flatMap((specifier) => {
           const name = nameOf(specifier.exported);
           const local = nameOf(specifier.local);
-          const binding = source === undefined ? imported.get(local) : { specifier: source, imported: local };
+          const binding =
+            source === undefined ? imported.get(local) : { specifier: source, imported: local, typeOnly: false };
           const value = statement.exportKind !== "type" && specifier.exportKind !== "type";
 
-          return binding ? [{ reexport: { name, ...binding }, value }] : [];
+          return binding ? [{ reexport: { name, ...binding, typeOnly: binding.typeOnly || !value }, value }] : [];
         });
         const values = statement.specifiers.filter(
           (specifier) => statement.exportKind !== "type" && specifier.exportKind !== "type",
@@ -104,10 +124,11 @@ export const extractExports = (file: ParsedFile): ExportTable => {
 
         return {
           own: bound.filter((entry) => entry.value).length < values.length,
-          forwards: bound.filter((entry) => entry.value).length,
+          forwards: bound.filter((entry) => entry.value && !entry.reexport.typeOnly).length,
           names: statement.specifiers.map((specifier) => nameOf(specifier.exported)),
           reexports: bound.map((entry) => entry.reexport),
           stars: [],
+          typeStars: [],
         };
       }
       case "ExportDefaultDeclaration": {
@@ -131,5 +152,6 @@ export const extractExports = (file: ParsedFile): ExportTable => {
     names: [...new Set([...(svelte ? ["default"] : []), ...parts.flatMap((part) => part.names)])],
     reexports: parts.flatMap((part) => part.reexports),
     stars: parts.flatMap((part) => part.stars),
+    typeStars: parts.flatMap((part) => part.typeStars),
   };
 };

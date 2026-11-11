@@ -1,4 +1,4 @@
-import { type ModuleGroup, type Side, directoryOf } from "../model";
+import { type ModuleGroup, type Side, byText, directoryOf } from "../model";
 
 const minimumGroupSize = 4;
 
@@ -9,7 +9,7 @@ const directoryDepth = (directory: string) => (directory === "." ? 0 : directory
 export const groupDirectories = (files: readonly string[]): Map<string, string> => {
   const initial = new Map(files.map((file) => [file, directoryOf(file)]));
   const directories = [...new Set(initial.values())].toSorted(
-    (a, b) => directoryDepth(b) - directoryDepth(a) || a.localeCompare(b),
+    (a, b) => directoryDepth(b) - directoryDepth(a) || byText(a, b),
   );
 
   return directories.reduce((assignment, directory) => {

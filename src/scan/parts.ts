@@ -1,4 +1,4 @@
-import { type Area, type GraphSnapshot, type ModuleNode, type Result, type Side, err, ok } from "../model";
+import { type Area, type GraphSnapshot, type ModuleNode, type Result, type Side, err, ok, uniqueNames } from "../model";
 
 export type TreeNode = {
   id: string;
@@ -130,18 +130,17 @@ export const partNames = (tree: Tree): Map<string, string> => {
   const names = new Map<string, string>();
   const visit = (node: TreeNode, name: string) => {
     names.set(node.id, name);
-    const used = new Map<string, number>();
 
-    node.children.forEach((id) => {
-      const child = tree.nodes.get(id);
+    const children = node.children.flatMap((id) => tree.nodes.get(id) ?? []);
+    const own = uniqueNames(
+      children.map((child) =>
+        child.kind === "side" && child.side !== null ? child.side : slug(child.label) || "part",
+      ),
+    );
 
-      if (!child) return;
-
-      const base = child.kind === "side" && child.side !== null ? child.side : slug(child.label) || "part";
-      const count = (used.get(base) ?? 0) + 1;
-      const own = count === 1 ? base : `${base}-${count}`;
-      used.set(base, count);
-      visit(child, name === "" ? own : `${name}/${own}`);
+    children.forEach((child, index) => {
+      const part = own[index] ?? child.id;
+      visit(child, name === "" ? part : `${name}/${part}`);
     });
   };
 

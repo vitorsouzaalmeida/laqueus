@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { checkUsage, runCheck } from "./commands/check";
 import type { Io } from "./commands/common";
 import { exportUsage, runExport } from "./commands/export";
+import { fileUsage, runFile } from "./commands/file";
 import { listUsage, runList } from "./commands/list";
 import { errorMessage } from "./model";
 
-const usage = [listUsage, exportUsage].join("\n\n");
+const usage = [listUsage, exportUsage, fileUsage, checkUsage].join("\n\n");
 
 const processIo = (cwd: string): Io => ({
   cwd,
@@ -23,6 +25,10 @@ export const main = async (argv: readonly string[], cwd: string, io: Io = proces
       return runList(rest, io);
     case "export":
       return runExport(rest, io);
+    case "file":
+      return runFile(rest, io);
+    case "check":
+      return runCheck(rest, io);
     case undefined:
     case "--help":
     case "-h":
