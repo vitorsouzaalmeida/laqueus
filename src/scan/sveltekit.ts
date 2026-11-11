@@ -10,6 +10,7 @@ import {
   type RouteFile,
   type RouteRole,
   type Side,
+  byText,
   directoryOf,
 } from "../model";
 import { configPattern } from "./files";
@@ -41,6 +42,7 @@ export const libAlias: LibAlias = {
   names: ["$lib", "#lib"],
   folder: ["src", "lib"],
   markers: ["svelte.config.js", "svelte.config.ts", "svelte.config.mjs", "package.json"],
+  virtual: [/^\$app\//, /^\$env\//, /^\$service-worker$/, /^\.\/\$types(\.js)?$/],
 };
 
 export const frameworkOf = (apps: readonly SvelteKitApp[]) => (apps.length > 0 ? "sveltekit" : null);
@@ -151,13 +153,13 @@ export const findRoutes = (paths: readonly string[], apps: readonly SvelteKitApp
     );
 
     return [...byDirectory]
-      .toSorted(([a], [b]) => routeUrl(a).localeCompare(routeUrl(b)) || a.localeCompare(b))
+      .toSorted(([a], [b]) => byText(routeUrl(a), routeUrl(b)) || byText(a, b))
       .map(([directory, routeFiles]) => ({
         id: `route:${routesRoot}/${directory}`,
         app: app.root,
         url: routeUrl(directory),
         directory: directory === "" ? routesRoot : `${routesRoot}/${directory}`,
-        files: routeFiles.toSorted((a, b) => a.role.localeCompare(b.role)),
+        files: routeFiles.toSorted((a, b) => byText(a.role, b.role)),
         layouts: routeAncestors(directory).flatMap((ancestor) =>
           (byDirectory.get(ancestor) ?? []).filter((file) => layoutRoles.has(file.role)).map((file) => file.moduleId),
         ),
@@ -215,7 +217,7 @@ export const placeFiles = (
   };
 
   const warnings = running.flatMap((edge): Diagnostic[] => {
-    const clientSide = fromClient.has(edge.from) && !isServerOnlyByName(apps, edge.from) && !fromServer.has(edge.from);
+    const clientSide = fromClient.has(edge.from) && !isServerOnlyByName(apps, edge.from);
 
     return clientSide && isServerOnlyByName(apps, edge.to)
       ? [

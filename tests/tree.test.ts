@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildTree, findPart, partNames } from "../src/scan/parts";
-import { fixture, scan } from "./helpers";
+import { byText, uniqueNames } from "../src/model";
+import { fixture, kitPackage, scan, withProject } from "./helpers";
 
 const setup = async () => {
   const snapshot = await scan(fixture("sveltekit-sides"));
@@ -41,5 +42,35 @@ describe("part names", () => {
       ok: false,
       error: expect.stringContaining("Top level: client"),
     });
+  });
+});
+
+const folder = (name: string) =>
+  Object.fromEntries([1, 2, 3, 4].map((n) => [`src/lib/${name}/f${n}.ts`, `export const v${n} = ${n};`]));
+
+describe("unique names", () => {
+  it("numbers repeated names, skipping names already in use", () => {
+    expect(uniqueNames(["a-b", "a-b", "a-b-2"])).toEqual(["a-b", "a-b-3", "a-b-2"]);
+    expect(uniqueNames(["x", "x"], ["x"])).toEqual(["x-2", "x-3"]);
+  });
+
+  it("never gives two parts the same name", async () => {
+    const files = {
+      "package.json": kitPackage,
+      "src/routes/+page.svelte": "<p>x</p>",
+      ...folder("a-b"),
+      ...folder("a_b"),
+      ...folder("a-b-2"),
+    };
+
+    await withProject(files, async (root) => {
+      const names = [...partNames(buildTree(await scan(root))).values()];
+
+      expect(new Set(names).size).toBe(names.length);
+    });
+  });
+
+  it("sorts text the same way whatever the machine's language", () => {
+    expect(["z.ts", "aa.ts", "Zeta.ts", "b.ts"].toSorted(byText)).toEqual(["aa.ts", "b.ts", "z.ts", "Zeta.ts"]);
   });
 });

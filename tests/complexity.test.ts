@@ -277,3 +277,42 @@ describe("Svelte templates", () => {
     expect(byName.get("<template>")?.inclusive).toBe(10);
   });
 });
+
+const measured = (file: string, code: string) =>
+  analyzeCode(file, code).functions.map((fn) => [fn.name, fn.complexity, fn.decisions.length]);
+
+describe("code outside functions", () => {
+  it("measures the top level of a module when it holds decisions", () => {
+    expect(
+      measured(
+        "m.ts",
+        "const flag = process.env.X ? 1 : 2;\nif (flag > 1 && flag < 9) console.log(flag);\nexport const f = (a: boolean) => a;",
+      ),
+    ).toEqual([
+      ["<module>", 4, 2],
+      ["f", 1, 0],
+    ]);
+    expect(measured("n.ts", "export const f = (a: boolean) => (a ? 1 : 2);")).toEqual([["f", 2, 1]]);
+  });
+
+  it("measures a component's scripts, $derived and $: included", () => {
+    const names = measured(
+      "C.svelte",
+      `<script>
+  let { a, b } = $props();
+  const v = $derived(a ? b : 0);
+  $: doubled = a || b;
+  $effect(() => {
+    if (a) console.log(v);
+  });
+</script>
+<p>{v}</p>`,
+    );
+
+    expect(names).toEqual([
+      ["<script>", 3, 2],
+      ["$effect callback", 2, 1],
+      ["<template>", 1, 0],
+    ]);
+  });
+});

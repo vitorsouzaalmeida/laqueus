@@ -1,3 +1,4 @@
+import { uniqueNames } from "../../model";
 import { slug } from "../../scan/parts";
 import { bullets, code, factLines, page, plural, section } from "../markdown";
 import type { Context } from "./context";
@@ -6,14 +7,8 @@ export const routesPages = (ctx: Context) => {
   const { facts, add, touches } = ctx;
 
   const routes = facts.routes.filter((route) => touches([...route.reach.client, ...route.reach.server]));
-  const routePages = new Map<string, string>();
-  const usedRoutes = new Map<string, number>();
-  routes.forEach((route) => {
-    const base = slug(route.directory) || "route";
-    const count = (usedRoutes.get(base) ?? 0) + 1;
-    usedRoutes.set(base, count);
-    routePages.set(route.id, `_routes/${count === 1 ? base : `${base}-${count}`}.md`);
-  });
+  const routeNames = uniqueNames(routes.map((route) => slug(route.directory) || "route"));
+  const routePages = new Map(routes.map((route, index) => [route.id, `_routes/${routeNames[index] ?? "route"}.md`]));
 
   add(
     "_routes/_index.md",

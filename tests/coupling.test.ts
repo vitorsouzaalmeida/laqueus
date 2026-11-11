@@ -4,6 +4,7 @@ import { createFacts } from "../src/report/facts";
 import { fewestBackLinks } from "../src/graph/layers";
 import { cycleGroups, smallestCuts } from "../src/graph/cycles";
 import { visibility } from "../src/graph/visibility";
+import { breadthFirst, chainTo } from "../src/graph/reach";
 import type { DependencyEdge } from "../src/model";
 
 const edge = (from: string, to: string, typeOnly = false): DependencyEdge => ({
@@ -82,7 +83,7 @@ describe("smallest cycle cuts", () => {
     expect(facts.cycles[0]).toMatchObject({
       search: "all",
       severity: { severity: "minor", edges: 2, loops: 1 },
-      withoutTypes: 2,
+      withoutTypes: { files: 2, cycles: 1 },
       reach: { fanIn: 3, fanOut: 2, pairs: 6 },
     });
   });
@@ -175,5 +176,52 @@ describe("area coupling", () => {
 
     expect(byLabel.get("src/x")).toMatchObject({ cohesion: 0.5, instability: 0.33, incoming: 2, outgoing: 1 });
     expect(byLabel.get("src/z")).toMatchObject({ instability: 1 });
+  });
+});
+
+describe("deep and dense graphs", () => {
+  it("finds cycles in long import chains without running out of stack", () => {
+    const nodes = Array.from({ length: 20000 }, (_, index) => `f${index}`);
+    const chain = nodes.slice(1).map((node, index) => edge(nodes[index] ?? "", node));
+
+    expect(cycleGroups(nodes, chain).size).toBe(0);
+    expect(cycleGroups(nodes, [...chain, edge(nodes.at(-1) ?? "", nodes[0] ?? "")]).size).toBe(20000);
+  });
+
+  it("tries every pair of imports even when a cycle has hundreds", () => {
+    const nodes = Array.from({ length: 21 }, (_, index) => `n${String(index).padStart(2, "0")}`);
+    const forward = nodes.flatMap((from, index) => nodes.slice(index + 1).map((to) => edge(from, to)));
+    const back = [edge("n20", "n00"), edge("n19", "n01")];
+
+    expect(forward.length + back.length).toBeGreaterThan(200);
+    expect(smallestCuts(nodes, [...forward, ...back])).toEqual([back]);
+  });
+
+  it("finds no cut when there is no cycle", () => {
+    expect(smallestCuts(["a", "b"], [edge("a", "b")])).toEqual([]);
+  });
+
+  it("ignores imports of files outside the graph when counting visibility", () => {
+    const reach = visibility(["a", "b"], [edge("b", "x"), edge("x", "y")]);
+
+    expect(reach.get("a")).toEqual({ fanIn: 1, fanOut: 1 });
+  });
+
+  it("explains reach through the first importer found at every level", () => {
+    const graph = new Map([
+      ["s", ["a", "b"]],
+      ["a", ["c"]],
+      ["b", ["c"]],
+      ["c", ["d"]],
+    ]);
+    const reach = breadthFirst(["s"], (node) => graph.get(node) ?? []);
+
+    expect(chainTo(reach, "d")).toEqual(["s", "a", "c", "d"]);
+  });
+
+  it("explains reach along a chain longer than the call stack", () => {
+    const reach = breadthFirst(["0"], (node) => (Number(node) < 30000 ? [String(Number(node) + 1)] : []));
+
+    expect(chainTo(reach, "30000")).toHaveLength(30001);
   });
 });

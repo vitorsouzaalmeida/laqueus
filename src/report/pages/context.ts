@@ -8,6 +8,8 @@ export type PageOptions = { exportedAt: string; scope?: string; logic: boolean }
 
 export type Add = (path: string, content: string) => void;
 
+export type PageExamples = { index: string | null; leaf: string | null; folder: string };
+
 export const pageContext = (facts: Facts, tree: Tree, options: PageOptions, add: Add) => {
   const scopeNode = options.scope === undefined ? undefined : tree.nodes.get(options.scope);
 
@@ -89,6 +91,15 @@ export const pageContext = (facts: Facts, tree: Tree, options: PageOptions, add:
   const touchesArea = (...ids: readonly string[]) => ids.some((id) => scopeAreas.has(id));
   const layerSides = facts.layers.filter((layers) => scopeSides.has(layers.side));
   const kit = facts.project.framework !== null;
+  const exported = [...tree.nodes.values()].filter((part) => part.kind !== "root" && inPart(part.id));
+  const exampleIndex = exported.find((part) => part.children.length > 0);
+  const exampleLeaf = exported.find((part) => part.children.length === 0);
+  const leafPage = exampleLeaf ? pageOf(exampleLeaf.id) : null;
+  const examples: PageExamples = {
+    index: exampleIndex ? pageOf(exampleIndex.id) : null,
+    leaf: leafPage,
+    folder: leafPage?.includes("/") ? `${leafPage.slice(0, leafPage.lastIndexOf("/"))}/` : "",
+  };
 
   return {
     facts,
@@ -119,6 +130,7 @@ export const pageContext = (facts: Facts, tree: Tree, options: PageOptions, add:
     scopeAreas,
     touchesArea,
     layerSides,
+    examples,
   };
 };
 

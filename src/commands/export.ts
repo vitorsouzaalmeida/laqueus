@@ -12,10 +12,10 @@ export const defaultOutput = ".laqueus";
 
 export const exportUsage = `Usage: laqueus export [part] [-C <dir>] [-o <dir>] [--no-logic]
 
-  Writes the project's metrics as a directory of Markdown pages an AI agent can
-  navigate: one folder per side and one page per area, sub-area or folder, named
-  like the parts of "laqueus list", with _files.md mapping every source file to
-  its page. Test files are not scanned. The directory is replaced each time.
+  Writes the project's metrics as a directory of Markdown pages: one folder per
+  side and one page per area, sub-area or folder, named like the parts of
+  "laqueus list", with _files.md mapping every source file to its page. Test
+  files are not scanned. The directory is replaced each time.
 
   part         a part from "laqueus list", e.g. server; defaults to the whole project
   -C <dir>     the project, defaults to the current working directory
@@ -90,7 +90,10 @@ export const runExport = async (argv: readonly string[], io: Io): Promise<number
     return 1;
   }
 
-  const written = await writeContext(options.value.output ?? outputFor(options.value.root, part), pages.value);
+  const written = await writeContext(options.value.output ?? outputFor(options.value.root, part), pages.value, [
+    options.value.root,
+    io.cwd,
+  ]);
 
   if (!written.ok) {
     io.log(written.error);

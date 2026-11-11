@@ -30,7 +30,7 @@ const shorten = (text: string) => {
   return compact.length > maxLabel ? `${compact.slice(0, maxLabel - 1)}…` : compact;
 };
 
-const anchorOf = (node: TSESTree.Node, unit: TSESTree.Node, parents: Parents): TSESTree.Node => {
+const anchorOf = (node: TSESTree.Node, unit: TSESTree.Node | null, parents: Parents): TSESTree.Node => {
   const climb = (current: TSESTree.Node): TSESTree.Node | undefined => {
     if (current === unit) return undefined;
     if (isAnchor(current)) return current;
@@ -45,9 +45,8 @@ const anchorOf = (node: TSESTree.Node, unit: TSESTree.Node, parents: Parents): T
 
 const grouped = (
   anchored: readonly { anchor: TSESTree.Node; weight: number; kind: DecisionKind }[],
-  code: string,
+  source: readonly string[],
 ): Decision[] => {
-  const source = code.split("\n");
   const byLine = anchored.reduce((map, { anchor, weight, kind }) => {
     const line = anchor.loc.start.line;
     const known = map.get(line);
@@ -61,10 +60,10 @@ const grouped = (
 };
 
 export const functionDecisions = (
-  fn: TSESTree.Node,
+  fn: TSESTree.Node | null,
   owned: readonly TSESTree.Node[],
   parents: Parents,
-  code: string,
+  lines: readonly string[],
 ): Decision[] =>
   grouped(
     owned
@@ -73,10 +72,10 @@ export const functionDecisions = (
         const anchor = anchorOf(node, fn, parents);
         return { anchor, weight: decisionWeight(node), kind: anchorKinds[anchor.type] ?? "statement" };
       }),
-    code,
+    lines,
   );
 
-export const markupDecisions = (owned: readonly TSESTree.Node[], code: string): Decision[] =>
+export const markupDecisions = (owned: readonly TSESTree.Node[], lines: readonly string[]): Decision[] =>
   grouped(
     owned
       .filter((node) => decisionWeight(node) > 0)
@@ -85,7 +84,7 @@ export const markupDecisions = (owned: readonly TSESTree.Node[], code: string): 
         weight: decisionWeight(node),
         kind: markupLoops.has(node.type) ? "loop" : markupCatches.has(node.type) ? "catch" : "if",
       })),
-    code,
+    lines,
   );
 
 type Flow = "live" | "dead" | "none";

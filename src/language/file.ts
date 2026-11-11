@@ -1,4 +1,4 @@
-import type { ScopeManager, Variable } from "@typescript-eslint/scope-manager";
+import type { Scope, ScopeManager, Variable } from "@typescript-eslint/scope-manager";
 import type { TSESTree } from "@typescript-eslint/types";
 import {
   type CallEdge,
@@ -28,7 +28,7 @@ import { extractExports } from "./exports";
 import { type ImportReference, extractImports } from "./imports";
 import { functionNamer } from "./names";
 import { type ParsedFile, parseSource } from "./parse";
-import { isSnippet, templateName } from "./svelte";
+import { isComponent, isSnippet, moduleName, scriptName, templateName } from "./svelte";
 
 export type FileAnalysis = {
   path: string;
@@ -46,15 +46,23 @@ const declaredVariable = (variable: Variable) =>
       (def.type === "Variable" && def.parent.type === "VariableDeclaration" && def.parent.kind !== "const"),
   );
 
-const outerWrites = (fn: FunctionLike, scope: ScopeManager): number => {
+const scopesByHome = (scope: ScopeManager) =>
+  scope.scopes.reduce((map, candidate) => {
+    const known = map.get(candidate.variableScope);
+
+    if (known) known.push(candidate);
+    else map.set(candidate.variableScope, [candidate]);
+
+    return map;
+  }, new Map<Scope, Scope[]>());
+
+const outerWrites = (fn: FunctionLike, scope: ScopeManager, homes: ReadonlyMap<Scope, readonly Scope[]>): number => {
   const own = scope.acquire(fn, true);
 
   if (!own) return 0;
 
   const home = own.variableScope;
-  const declared = scope.scopes
-    .filter((candidate) => candidate.variableScope === home)
-    .flatMap((candidate) => candidate.variables.filter(declaredVariable));
+  const declared = (homes.get(home) ?? []).flatMap((candidate) => candidate.variables.filter(declaredVariable));
 
   return declared.filter((variable) =>
     variable.references.some(
@@ -74,6 +82,10 @@ export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
   const namer = functionNamer(parents, new Set(file.template));
   const functions = nodes.filter(isFunction);
   const ids = new Map<FunctionLike, string>();
+  const lines = file.code.split("\n");
+  const homes = scopesByHome(file.scope);
+  const ownedBy = (roots: readonly TSESTree.Node[]) =>
+    roots.flatMap((root) => (isOwnershipBoundary(root) ? [] : [root, ...ownNodes(root, file.keys)]));
 
   const real = functions.map((fn): FunctionNode => {
     const location = locationOf(fn, file.path);
@@ -89,8 +101,8 @@ export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
       complexity: cyclomaticComplexity(fn, file.keys),
       branches: branchComplexity(fn, file.keys),
       inclusive: inclusiveComplexity(fn, file.keys),
-      outerWrites: outerWrites(fn, file.scope),
-      decisions: functionDecisions(fn, ownNodes(fn, file.keys), parents, file.code),
+      outerWrites: outerWrites(fn, file.scope, homes),
+      decisions: functionDecisions(fn, ownNodes(fn, file.keys), parents, lines),
       waysOut: waysOut(fn),
     };
   });
@@ -105,31 +117,47 @@ export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
       branches: branchComplexity(snippet, file.keys),
       inclusive: inclusiveComplexity(snippet, file.keys),
       outerWrites: 0,
-      decisions: markupDecisions(ownNodes(snippet, file.keys), file.code),
+      decisions: markupDecisions(ownNodes(snippet, file.keys), lines),
       waysOut: 1,
     };
   });
   const [first] = file.template;
-  const markup = first
-    ? ((): FunctionNode[] => {
-        const location = locationOf(first, file.path);
-        const owned = file.template.flatMap((root) =>
-          isOwnershipBoundary(root) ? [] : [root, ...ownNodes(root, file.keys)],
-        );
-        return [
+  const markupNodes = ownedBy(file.template);
+  const markup: FunctionNode[] = first
+    ? [
+        {
+          id: `${functionId(locationOf(first, file.path))}:template`,
+          moduleId: file.path,
+          name: templateName,
+          location: locationOf(first, file.path),
+          ...measureTemplate(file.template, file.keys),
+          outerWrites: 0,
+          decisions: markupDecisions(markupNodes, lines),
+          waysOut: 1,
+        },
+      ]
+    : [];
+  const [firstRoot] = file.roots;
+  const topNodes = ownedBy(file.roots);
+  const top = measureTemplate(file.roots, file.keys);
+  const component = isComponent(file.path);
+  const topLevel: FunctionNode[] =
+    firstRoot && top.complexity > 1
+      ? [
           {
-            id: `${functionId(location)}:template`,
+            id: `${functionId(locationOf(firstRoot, file.path))}:${component ? "script" : "module"}`,
             moduleId: file.path,
-            name: templateName,
-            location,
-            ...measureTemplate(file.template, file.keys),
+            name: component ? scriptName : moduleName,
+            location: locationOf(firstRoot, file.path),
+            complexity: top.complexity,
+            branches: top.branches,
+            inclusive: top.complexity,
             outerWrites: 0,
-            decisions: markupDecisions(owned, file.code),
+            decisions: functionDecisions(null, topNodes, parents, lines),
             waysOut: 1,
           },
-        ];
-      })()
-    : [];
+        ]
+      : [];
   const classes = nodes.filter(isClass).map((cls): ClassNode => {
     const location = locationOf(cls, file.path);
     return {
@@ -145,7 +173,7 @@ export const analyzeParsedFile = (file: ParsedFile): FileAnalysis => {
     path: file.path,
     imports: extractImports(file, nodes),
     exports: extractExports(file),
-    functions: [...real, ...markup, ...snippets].toSorted(byPosition),
+    functions: [...real, ...topLevel, ...markup, ...snippets].toSorted(byPosition),
     classes,
     calls: resolveLocalCalls(functions, {
       file: file.path,

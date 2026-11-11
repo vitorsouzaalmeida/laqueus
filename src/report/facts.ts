@@ -96,7 +96,7 @@ export type CycleFacts = {
   cuts: CycleEdge[][];
   search: CutSearch;
   severity: CycleSeverity;
-  withoutTypes: number;
+  withoutTypes: { files: number; cycles: number };
   reach: { fanIn: number; fanOut: number; pairs: number };
 };
 
@@ -164,7 +164,7 @@ export type Link = { from: string; to: string; imports: number };
 
 export type DiagnosticFacts = { file: string; line: number | null; kind: DiagnosticKind; message: string };
 
-const groupBy = <T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> =>
+export const groupBy = <T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> =>
   items.reduce((map, item) => {
     const group = map.get(key(item));
 
@@ -234,7 +234,7 @@ const externalCounts = (modules: readonly ModuleNode[]) =>
     ...modules
       .flatMap((module) => module.externals)
       .reduce((map, name) => map.set(name, (map.get(name) ?? 0) + 1), new Map<string, number>()),
-  ].toSorted((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  ].toSorted((a, b) => b[1] - a[1] || byText(a[0], b[0]));
 
 const routeReach = (route: Route, outgoing: ReadonlyMap<string, readonly string[]>) => {
   const reach = (side: "client" | "server") => [
@@ -428,6 +428,10 @@ export const createFacts = (data: GraphSnapshot) => {
               within.map((edge) => ({ from: edge.from, to: edge.to, imports: 1, names: edge.names.length })),
             );
       const backKeys = new Set((searched?.back ?? []).map(edgeKey));
+      const running = cycleGroups(
+        ids,
+        within.filter((edge) => !edge.typeOnly),
+      );
       const sample = members[0]?.metrics;
       const fanIn = sample?.visibilityFanIn ?? 0;
       const fanOut = sample?.visibilityFanOut ?? 0;
@@ -439,10 +443,7 @@ export const createFacts = (data: GraphSnapshot) => {
         cuts: searched ? [within.filter((edge) => backKeys.has(edgeKey(edge))).map(cycleEdge)] : listed,
         search: searched ? (searched.approximate ? "approximate" : "exact") : "all",
         severity: cycleSeverity(members.length, within.length),
-        withoutTypes: cycleGroups(
-          ids,
-          within.filter((edge) => !edge.typeOnly),
-        ).size,
+        withoutTypes: { files: running.size, cycles: new Set(running.values()).size },
         reach: { fanIn, fanOut, pairs: fanIn * fanOut },
       } satisfies CycleFacts;
     })
@@ -603,10 +604,9 @@ export const createFacts = (data: GraphSnapshot) => {
     };
   });
 
-  const outgoing = data.dependencyEdges.reduce(
-    (map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]),
-    new Map<string, string[]>(),
-  );
+  const outgoing = data.dependencyEdges
+    .filter((edge) => !edge.typeOnly)
+    .reduce((map, edge) => map.set(edge.from, [...(map.get(edge.from) ?? []), edge.to]), new Map<string, string[]>());
   const routes: RouteFacts[] = data.routes.map((route) => {
     const reach = routeReach(route, outgoing);
 

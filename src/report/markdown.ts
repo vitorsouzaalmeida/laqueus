@@ -1,8 +1,14 @@
-export const code = (text: string) => {
-  const fence = text.includes("`") ? "``" : "`";
+export const oneLine = (text: string) => text.replace(/\r\n|\r|\n/g, "\\n");
+
+export const code = (raw: string) => {
+  const text = oneLine(raw);
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((run) => run[0].length));
+  const fence = "`".repeat(longest + 1);
   const padding = text.startsWith("`") || text.endsWith("`") ? " " : "";
   return `${fence}${padding}${text}${padding}${fence}`;
 };
+
+export const escapeText = (text: string) => oneLine(text).replace(/[\\`*_[\]<>]/g, "\\$&");
 
 export const factLines = (pairs: readonly (readonly [string, string | number | null])[]) =>
   pairs.map(([label, value]) => `- ${label}: ${value ?? "none"}`).join("\n");
@@ -22,7 +28,7 @@ export const percent = (part: number, whole: number) =>
 export const ratioText = (value: number | null) => (value === null ? "none" : value.toFixed(2));
 
 export const page = (l0: string, title: string, ...sections: readonly string[]) =>
-  `${[l0, `# ${title}`, ...sections].join("\n\n")}\n`;
+  `${[oneLine(l0), `# ${escapeText(title)}`, ...sections].join("\n\n")}\n`;
 
 export const orNone = (value: string | number | null) => (value === null ? "none" : String(value));
 

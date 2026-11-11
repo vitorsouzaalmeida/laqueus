@@ -11,6 +11,7 @@ export type Parsed = {
   template: TSESTree.Node[];
   keys: VisitorKeys;
   scope: ScopeManager;
+  comments: TSESTree.Comment[];
 };
 
 /** The functions the analysis measures; TypeScript-only signatures have no runtime body. */

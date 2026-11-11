@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { bandShares, branchStep, createFacts } from "../src/report/facts";
 import type { GraphSnapshot } from "../src/model";
 import { buildTree } from "../src/scan/parts";
-import { fixture, scan } from "./helpers";
+import { typesText } from "../src/report/pages/text";
+import { fixture, kitPackage, scan, withProject } from "./helpers";
 
 const treeOf = (snapshot: GraphSnapshot) => buildTree(snapshot);
 
@@ -100,5 +101,43 @@ describe("export facts", () => {
 
   it("shares decisions out by CC band", () => {
     expect(bandShares([1, 3, 12, 20])).toEqual({ total: 32, low: 2, moderate: 11, high: 19 });
+  });
+});
+
+describe("facts that depend on type imports", () => {
+  it("walks only the imports that run when listing what a route reaches", async () => {
+    const files = {
+      "package.json": kitPackage,
+      "src/routes/+page.svelte":
+        '<script lang="ts">\n  import type { Item } from "$lib/types";\n  import { show } from "$lib/show";\n  let { data }: { data: Item } = $props();\n</script>\n<p>{show(data)}</p>',
+      "src/lib/types.ts":
+        'import { z } from "zod";\nexport const schema = z.object({});\nexport type Item = { a: number };',
+      "src/lib/show.ts": "export const show = (x: unknown) => String(x);",
+    };
+
+    await withProject(files, async (root) => {
+      const [route] = createFacts(await scan(root)).routes;
+
+      expect(route?.reach.client).toEqual(["src/lib/show.ts", "src/routes/+page.svelte"]);
+      expect(route?.packages.client).toEqual([]);
+    });
+  });
+
+  it("tells a cycle that splits without type imports from the same cycle", async () => {
+    const files = {
+      "src/a.ts": 'import { b } from "./b";\nexport const a = () => b;',
+      "src/b.ts":
+        'import { a } from "./a";\nimport type { C } from "./c";\nexport const b = () => a;\nexport type B = C;',
+      "src/c.ts": 'import { d } from "./d";\nexport const c = () => d;\nexport type C = number;',
+      "src/d.ts":
+        'import { c } from "./c";\nimport type { B } from "./b";\nexport const d = () => c;\nexport type D = B;',
+    };
+
+    await withProject(files, async (root) => {
+      const [cycle] = createFacts(await scan(root)).cycles;
+
+      expect(cycle?.withoutTypes).toEqual({ files: 4, cycles: 2 });
+      expect(cycle ? typesText(cycle) : "").toBe("4 files still in 2 cycles");
+    });
   });
 });

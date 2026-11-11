@@ -1,27 +1,29 @@
 export type Reach = Map<string, string | null>;
 
 export const breadthFirst = (starts: readonly string[], next: (node: string) => readonly string[]): Reach => {
-  const visit = (frontier: readonly string[], seen: Reach): Reach => {
-    if (frontier.length === 0) return seen;
+  const seen: Reach = new Map(starts.map((start) => [start, null]));
+  const queue = [...seen.keys()];
 
-    const discovered = frontier.flatMap((node) =>
-      next(node)
-        .filter((target) => !seen.has(target))
-        .map((target) => [target, node] as const),
-    );
-    const fresh = [...new Map(discovered.toReversed())];
+  for (let head = 0; head < queue.length; head++) {
+    const node = queue[head] ?? "";
 
-    fresh.forEach(([target, parent]) => seen.set(target, parent));
+    next(node).forEach((target) => {
+      if (seen.has(target)) return;
 
-    return visit(
-      fresh.map(([target]) => target),
-      seen,
-    );
-  };
-  return visit(starts, new Map(starts.map((start) => [start, null])));
+      seen.set(target, node);
+      queue.push(target);
+    });
+  }
+
+  return seen;
 };
 
 export const chainTo = (reach: Reach, node: string): string[] => {
-  const parent = reach.get(node);
-  return parent === null || parent === undefined ? [node] : [...chainTo(reach, parent), node];
+  const chain = [node];
+
+  for (let parent = reach.get(node); parent !== null && parent !== undefined; parent = reach.get(parent)) {
+    chain.push(parent);
+  }
+
+  return chain.toReversed();
 };

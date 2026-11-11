@@ -6,14 +6,21 @@ import { shownCuts } from "./facts";
 
 export const widelyUsedText = `Files imported by at least ${widelyUsedShare * 100}% of the files of their side and far more than the rest: their fan-in is above the side's third quartile plus ${farOut} times the interquartile range, counted as at least 1 (Tukey's far-out values). They are set aside before the areas are found and kept together here, as Bunch does with omnipresent modules (https://doi.org/10.1109/ICSM.1999.792498), so imports of them do not pull areas together.`;
 
-export const definitions = (kit: boolean): readonly (readonly [string, string])[] => [
+export const definitions = (
+  kit: boolean,
+  examples: { index: string | null; leaf: string | null },
+): readonly (readonly [string, string])[] => [
   [
     "Scope",
     "Test files are not scanned: names with .test., .spec. or .stories., and folders named test, tests, __tests__, __mocks__, __fixtures__ or e2e. Imports of test files are left out too.",
   ],
   [
     "Parts",
-    "The project is split the way `laqueus list` splits it: by side, then by area and sub-area (client, shared, server and code sides) or by folder (the other sides). Every part has a page, named like the part: `server/_index.md` for the server side, `server/src-lib.md` for an area. A part with sub-parts has an `_index.md` in a folder of its name.",
+    `The project is split the way \`laqueus list\` splits it: by side, then by area and sub-area (client, shared, server and code sides) or by folder (the other sides). Every part has a page, named like the part${
+      examples.index && examples.leaf
+        ? `, e.g. \`${examples.index}\` for a part with sub-parts and \`${examples.leaf}\` for one without`
+        : ""
+    }. A part with sub-parts has an \`_index.md\` in a folder of its name.`,
   ],
   [
     "CC",
@@ -33,7 +40,7 @@ export const definitions = (kit: boolean): readonly (readonly [string, string])[
   ],
   [
     "Function names",
-    "Inner functions are prefixed with the function holding them: `load › db.transaction callback`, `build › format`. Other unnamed functions are `<anonymous>@<line>`. A Svelte component's markup is one function named `<template>`, a snippet is `<template> › name`, and an inline handler is named after its attribute, e.g. `<template> › onclick callback`. Names can repeat within a file; the line tells them apart.",
+    "Inner functions are prefixed with the function holding them: `load › db.transaction callback`, `build › format`. Other unnamed functions are `<anonymous>@<line>`. A Svelte component's markup is one function named `<template>`, a snippet is `<template> › name`, and an inline handler is named after its attribute, e.g. `<template> › onclick callback`. Code outside every function is measured as one function when it holds a decision: `<script>` for a component's scripts, `<module>` for the top level of any other file. Names can repeat within a file; the line tells them apart.",
   ],
   ["Max CC", "Highest CC among the functions of a file, or of every file in a part. none when there is no function."],
   [
@@ -89,9 +96,12 @@ export const definitions = (kit: boolean): readonly (readonly [string, string])[
   ],
   [
     "Smallest cut",
-    `The fewest imports inside a cycle whose removal leaves no cycle among its files. Every choice of up to ${largestCut} imports is listed, fewest imported names first, at most ${shownCuts}. When none is that small, one cut is searched: exactly for up to ${exactLimit} files, otherwise with the Eades–Lin–Smyth heuristic, putting back every removed import that does not recreate a cycle.`,
+    `The fewest imports inside a cycle whose removal leaves no cycle among its files. Every choice of up to ${largestCut} imports is listed, fewest imported names first, at most ${shownCuts}. When none is that small, or a cycle has too many to try, one cut is searched: exactly for up to ${exactLimit} files, otherwise with the Eades–Lin–Smyth heuristic, putting back every removed import that does not recreate a cycle.`,
   ],
-  ["Without type imports", "How many of a cycle's files are still in a cycle when only the imports that run are kept."],
+  [
+    "Without type imports",
+    "How many of a cycle's files are still in a cycle, and in how many cycles, when only the imports that run are kept.",
+  ],
   [
     "Side",
     kit

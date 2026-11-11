@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { detectAreas } from "../src/graph/areas";
 import type { DependencyEdge } from "../src/model";
-import { fixture, scan } from "./helpers";
+import { fixture, kitPackage, scan, withProject } from "./helpers";
 
 const edge = (from: string, to: string): DependencyEdge => ({
   kind: "imports",
@@ -129,5 +129,52 @@ describe("SvelteKit server-only boundary", () => {
           "Client-side code imports the server-only module src/lib/server/secret.ts. SvelteKit refuses to build this.",
       },
     ]);
+  });
+});
+
+const spread = (folders: readonly string[]) =>
+  folders.flatMap((folder) => [1, 2].map((n) => `src/lib/${folder}/f${n}.ts`));
+
+describe("area names", () => {
+  it("keeps the ids of the set-aside areas for them alone", () => {
+    const folder = cluster("standalone");
+    const areas = detectAreas([...folder, "src/lone.ts"], dense(folder), "code");
+    const ids = areas.map((area) => area.id);
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(areas.filter((area) => area.id === "area:code:standalone").map((area) => area.label)).toEqual([
+      "Standalone files",
+    ]);
+  });
+
+  it("does not name areas after folders every area shares", () => {
+    const first = spread(["a", "b", "c", "d"]);
+    const second = spread(["e", "f", "g", "h"]);
+    const areas = detectAreas([...first, ...second], [...dense(first), ...dense(second)], "code");
+
+    expect(areas.map((area) => area.label).toSorted()).toEqual(["a / b", "e / f"]);
+  });
+});
+
+describe("SvelteKit server-only boundary, shared code", () => {
+  it("warns when code shared by both sides imports a server-only module", async () => {
+    const files = {
+      "package.json": kitPackage,
+      "src/routes/+page.svelte": '<script>\n  import { format } from "$lib/util";\n</script>\n<p>{format("a")}</p>',
+      "src/routes/+page.server.ts":
+        'import { format } from "$lib/util";\nexport const load = () => ({ x: format("a") });',
+      "src/lib/util.ts":
+        'import { secret } from "$lib/server/secret";\nexport const format = (s: string) => s + secret;',
+      "src/lib/server/secret.ts": 'export const secret = "k";',
+    };
+
+    await withProject(files, async (root) => {
+      const snapshot = await scan(root);
+
+      expect(snapshot.modules.find((module) => module.path === "src/lib/util.ts")?.placement.side).toBe("shared");
+      expect(snapshot.diagnostics.map((diagnostic) => [diagnostic.file, diagnostic.kind])).toEqual([
+        ["src/lib/util.ts", "server-only-import"],
+      ]);
+    });
   });
 });

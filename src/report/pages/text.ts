@@ -79,12 +79,14 @@ export const searchText = (cycle: CycleFacts) =>
       ? "fewest imports found by an exact search"
       : "found by a heuristic, may not be the fewest";
 
-export const typesText = (cycle: CycleFacts) =>
-  cycle.withoutTypes === 0
+export const typesText = ({ withoutTypes, files }: CycleFacts) =>
+  withoutTypes.files === 0
     ? "no cycle: it exists only because of type imports"
-    : cycle.withoutTypes === cycle.files.length
-      ? "the same cycle"
-      : `${plural(cycle.withoutTypes, "file")} still in a cycle`;
+    : withoutTypes.cycles > 1
+      ? `${plural(withoutTypes.files, "file")} still in ${plural(withoutTypes.cycles, "cycle")}`
+      : withoutTypes.files === files.length
+        ? "the same cycle"
+        : `${plural(withoutTypes.files, "file")} still in a cycle`;
 
 export const shareText = (part: number, whole: number, noun: string, many = `${noun}s`) =>
   whole === 0 ? `none (no ${many})` : `${percent(part, whole)} (${part} of ${plural(whole, noun, many)})`;

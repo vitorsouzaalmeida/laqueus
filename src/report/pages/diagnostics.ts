@@ -1,4 +1,4 @@
-import { bullets, code, orNone, page } from "../markdown";
+import { bullets, code, oneLine, orNone, page } from "../markdown";
 import type { Context } from "./context";
 
 export const diagnosticsPage = (ctx: Context) => {
@@ -13,7 +13,7 @@ export const diagnosticsPage = (ctx: Context) => {
       bullets(
         diagnostics.map(
           (diagnostic) =>
-            `${code(diagnostic.file)} line ${orNone(diagnostic.line)}, ${diagnostic.kind}: ${diagnostic.message}`,
+            `${code(diagnostic.file)} line ${orNone(diagnostic.line)}, ${diagnostic.kind}: ${oneLine(diagnostic.message)}`,
         ),
       ),
     ),

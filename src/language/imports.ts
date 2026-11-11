@@ -131,9 +131,43 @@ const typeImportReference = (node: TSESTree.TSImportType, file: string): ImportR
       ];
 };
 
+const jsDocImport = /import\(\s*(["'])([^"'\n]+)\1\s*\)(?:\.([A-Za-z_$][\w$]*))?/g;
+
+const isTypeScript = (file: string) => /\.[cm]?tsx?$/.test(file);
+
+const jsDocReferences = (file: ParsedFile): ImportReference[] =>
+  isTypeScript(file.path)
+    ? []
+    : file.comments
+        .filter((comment) => comment.type === "Block" && comment.value.startsWith("*"))
+        .flatMap((comment) =>
+          [...comment.value.matchAll(jsDocImport)].flatMap((match) => {
+            const specifier = match[2];
+
+            if (specifier === undefined) return [];
+
+            const before = comment.value.slice(0, match.index).split("\n");
+            const last = before.at(-1) ?? "";
+
+            return [
+              {
+                specifier,
+                location: {
+                  file: file.path,
+                  line: comment.loc.start.line + before.length - 1,
+                  column: before.length === 1 ? comment.loc.start.column + 2 + last.length : last.length,
+                },
+                names: [match[3] ?? "*"],
+                typeOnly: true,
+              },
+            ];
+          }),
+        );
+
 export const extractImports = (file: ParsedFile, nodes: readonly TSESTree.Node[]): ImportReference[] => [
   ...nodes.flatMap((node) =>
     referencesOf(node).map((reference) => ({ ...reference, location: locationOf(node, file.path) })),
   ),
   ...inlineTypeImports(file.roots).flatMap((node) => typeImportReference(node, file.path)),
+  ...jsDocReferences(file),
 ];

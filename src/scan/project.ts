@@ -150,7 +150,7 @@ export const analyzeProject = async (input: string): Promise<Result<GraphSnapsho
                 location: reference.location,
                 names: definitions.map((definition) => definition.name),
                 via,
-                typeOnly: reference.typeOnly,
+                typeOnly: reference.typeOnly || definitions.every((definition) => definition.typeOnly),
               },
             ];
       }),
